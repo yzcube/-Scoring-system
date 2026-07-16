@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -45,10 +45,16 @@ async function stop(child) {
 
 const port = await getFreePort();
 const baseUrl = `http://127.0.0.1:${port}`;
+const testTargets = process.argv.slice(2);
+if (testTargets.length > 1) throw new Error("Run one visual test target at a time so each spec receives isolated server state.");
+const testTarget = testTargets[0] || "e2e/dynamicJudgeEnrollment.spec.mjs";
 const dataDir = await mkdtemp(join(tmpdir(), "contest-visual-"));
+const artifactDir = join(dataDir, "artifacts");
 let server;
+let completedSuccessfully = false;
 
 try {
+  await mkdir(artifactDir, { recursive: true });
   server = spawn(process.execPath, ["contest-server.mjs"], {
     cwd: rootDir,
     env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", NODE_ENV: "development", CONTEST_STORAGE: "file", CONTEST_DATA_DIR: dataDir },
@@ -57,13 +63,18 @@ try {
   await waitForHealth(baseUrl, server);
   const playwright = spawn(join(rootDir, "node_modules", ".bin", "playwright"), [
     "test",
-    "e2e/dynamicJudgeEnrollment.spec.mjs",
+    testTarget,
     "--workers=1",
     "--retries=0",
     "--trace=retain-on-failure",
   ], {
     cwd: rootDir,
-    env: { ...process.env, VISUAL_BASE_URL: baseUrl },
+    env: {
+      ...process.env,
+      VISUAL_BASE_URL: baseUrl,
+      VISUAL_ARTIFACT_DIR: artifactDir,
+      PLAYWRIGHT_OUTPUT_DIR: join(dataDir, "playwright-results"),
+    },
     stdio: "inherit",
   });
   const exitCode = await new Promise((resolveExit, reject) => {
@@ -71,7 +82,9 @@ try {
     playwright.once("exit", resolveExit);
   });
   if (exitCode !== 0) process.exitCode = exitCode ?? 1;
+  else completedSuccessfully = true;
 } finally {
   await stop(server);
-  await rm(dataDir, { recursive: true, force: true });
+  if (completedSuccessfully) await rm(dataDir, { recursive: true, force: true });
+  else console.error(`Visual test artifacts preserved at ${dataDir}`);
 }

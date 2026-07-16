@@ -7,6 +7,7 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
 Prototype feedback:
+- The active scoring rubric follows the 院校赛道决赛评分表: 商品数字化营销实践 25, AI 技术应用能力 30, 应用成效与优化思路 20, 路演展示表现 15, 实践报告质量 10, for a total of 100.
 - Do not show the scoring-dimension quick navigation bar.
 - In each score editor, show only the awarded score. The item maximum is already displayed beside the item title, so do not repeat it inside the input.
 - Judges must be able to enter, review, and submit scores precise to two decimal places.
@@ -33,6 +34,9 @@ Prototype feedback:
 - The prototype has 7 judge accounts and 1 admin account. Admin sees judge progress and team综合评分.
 - Team综合评分 is calculated from submitted judge totals by removing the highest and lowest scores, then averaging the remaining scores.
 - The current team name in the top header must be allowed to wrap and display fully, including very long team names.
+- On the judge scoring page, the assigned team and current total must remain in the same header row on phones, tablets, and desktops. Long team names may wrap only inside the team column and must not push the total onto a new row.
+- The judge server connection status must keep visible text and use a solid status dot: green when the scoring server is connected and red when it is unavailable. Do not rely on color alone.
+- Judge responsive changes must cover the supported 320px minimum width through tablet landscape and keep the header, top session controls, and submit bar free of clipping or overlap.
 - Every signed-in role must have a clear logout path. Judges should not need to scroll through the full team list to exit.
 - Judges need a directly visible logout control on the default scoring page, outside the compact top hero.
 - Judges should not see a current-team score display entry link on the scoring page; score display access is for admin/control workflows.
@@ -51,6 +55,10 @@ Prototype feedback:
 - Do not display or edit organization identity information anywhere in the judging, admin, login, or score display surfaces; avoid exposing team origin associations to judges.
 - Admin team information editing must preserve in-progress edits and just-saved values without being overwritten by background server polling.
 - Admin must have enough emergency control for finals operations, including reopening an accidental judge submission and clearing a judge's score for a specific team with single-click actions rather than double-click or two-tap confirmation.
+- Admin emergency force dispatch should be a direct button action, not a checkbox, and should not require typing a switch reason.
+- Admin emergency force dispatch should use lightweight progressive disclosure: explain the immediate consequence in plain text and make the final action name the target team, so novice operators can use it without extra form burden.
+- Admin emergency force dispatch entry must be visually distinct from disabled/waiting actions so operators notice it during live incidents.
+- The admin dispatch team selector must allow selecting completed teams so staff can switch back for special handling such as rescoring.
 - Add a dedicated team score display page for finals score presentation.
 - The team score display page should feel like an AI competition display: dark, tech-forward, cool, high-contrast, and inspired by MotionSites-style section design, while keeping the judging and admin surfaces operational.
 - The score display page must be landscape-first and show one team at a time, not a full multi-team leaderboard.
@@ -103,6 +111,7 @@ Prototype feedback:
 - Judges should not manage, browse, or navigate teams independently; the administrator assigns the scoring team and judges score only the team currently assigned to them.
 - The scoring numeric keypad should actively return into view when a judge selects a scoring item, while keeping the focused scoring item visible above it.
 - The judge submit action must remain directly visible while the numeric keypad is open; judges must not need to collapse the keypad to find or use "提交评分".
+- The judge submit bar must be a true fixed floating control above the viewport bottom, not a relative flex child; reserve enough scrollable bottom space for the final scoring item to clear the floating bar completely.
 - The administrator is the sole operator for dispatching the current team to score and evaluate; judges follow that assignment rather than choosing a team themselves.
 - The administrator backend must support adding and maintaining teams and judge accounts.
 - Score presentation must be launched and controlled from the administrator workflow, not exposed as a judge-side entry point.

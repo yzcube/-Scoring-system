@@ -202,21 +202,10 @@ async function main() {
       body: JSON.stringify({ teamId: "GZ02", revision: firstAssignment.assignmentRevision }),
     });
     assert(normalNextDispatch.status === 409, "next team must be blocked while the roster is incomplete");
-    const forceWithoutReason = await requestJson(baseUrl, "/api/assignments/dispatch", {
-      method: "POST",
-      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ teamId: "GZ02", force: true, revision: firstAssignment.assignmentRevision }),
-    });
-    assert(forceWithoutReason.status === 400, "forced dispatch must require a reason");
     const forcedDispatch = await requestJson(baseUrl, "/api/assignments/dispatch", {
       method: "POST",
       headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({
-        teamId: "GZ02",
-        force: true,
-        reason: "Regression exercise of the documented emergency handoff",
-        revision: firstAssignment.assignmentRevision,
-      }),
+      body: JSON.stringify({ teamId: "GZ02", force: true, revision: firstAssignment.assignmentRevision }),
     });
     assert(forcedDispatch.status === 200, `forced dispatch failed: ${forcedDispatch.payload.error ?? ""}`);
     const secondAssignment = forcedDispatch.payload.activeAssignment;
