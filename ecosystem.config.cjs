@@ -1,0 +1,36 @@
+module.exports = {
+  apps: [
+    {
+      name: "campus-final-scoring",
+      script: "contest-server.mjs",
+      exec_mode: "fork",
+      instances: 1,
+      env: {
+        NODE_ENV: "production",
+        HOST: "0.0.0.0",
+        PORT: "8776",
+        CONTEST_STORAGE: "mysql",
+        CONTEST_MYSQL_HOST: process.env.CONTEST_MYSQL_HOST || "127.0.0.1",
+        CONTEST_MYSQL_PORT: process.env.CONTEST_MYSQL_PORT || "3306",
+        CONTEST_MYSQL_DATABASE: process.env.CONTEST_MYSQL_DATABASE || "campus_final_scoring",
+        CONTEST_MYSQL_USER: process.env.CONTEST_MYSQL_USER || "contest_scoring",
+        CONTEST_MYSQL_PASSWORD: process.env.CONTEST_MYSQL_PASSWORD || "",
+        CONTEST_MYSQL_TABLE_PREFIX: process.env.CONTEST_MYSQL_TABLE_PREFIX || "contest_final_",
+      },
+      env_mysql: {
+        NODE_ENV: "production",
+        HOST: "0.0.0.0",
+        PORT: "8776",
+        CONTEST_STORAGE: "mysql",
+        CONTEST_MYSQL_HOST: process.env.CONTEST_MYSQL_HOST || "127.0.0.1",
+        CONTEST_MYSQL_PORT: process.env.CONTEST_MYSQL_PORT || "3306",
+        CONTEST_MYSQL_DATABASE: process.env.CONTEST_MYSQL_DATABASE || "campus_final_scoring",
+        CONTEST_MYSQL_USER: process.env.CONTEST_MYSQL_USER || "contest_scoring",
+        CONTEST_MYSQL_PASSWORD: process.env.CONTEST_MYSQL_PASSWORD || "",
+        CONTEST_MYSQL_TABLE_PREFIX: process.env.CONTEST_MYSQL_TABLE_PREFIX || "contest_final_",
+      },
+      max_memory_restart: "512M",
+      time: true,
+    },
+  ],
+};

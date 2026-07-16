@@ -1,0 +1,145 @@
+# Prototype Instructions
+
+Run the local server yourself and open the preview in the in-app browser. Do not give the user server-start instructions when you can run it.
+
+Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
+
+When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
+
+Prototype feedback:
+- Do not show the scoring-dimension quick navigation bar.
+- In each score editor, show only the awarded score. The item maximum is already displayed beside the item title, so do not repeat it inside the input.
+- Judges must be able to enter, review, and submit scores precise to two decimal places.
+- Do not use sliders as the primary scoring control for professional judging. Use a dedicated numeric scoring keypad with 0.01 precision and clear current-item focus.
+- Keep row-level scoring controls simple for older judges and leaders: no inline +/- micro-adjust buttons; use one large score input area per scoring item.
+- Do not show dimension-level quick scoring controls such as full score, 85%, or clear.
+- The numeric keypad should only appear while a judge is actively scoring after tapping a score field.
+- Dark primary action buttons must keep a dark background with light text in hover, focus, active, and selected states.
+- The keypad backspace key must delete one character from the current score draft; only the clear key should clear the entire score.
+- The keypad action area should support moving to both the previous and next scoring item.
+- The numeric keypad should provide a visible collapse control so judges can close it without changing the selected score item.
+- When the keypad is collapsed with a current scoring item selected, show a directly visible manual "展开键盘" control above the submit bar. It must reopen that item without changing its score.
+- The top hero should only show the team name, total score, previous team, and next team.
+- Keep the top hero as a compact toolbar rather than a large information card.
+- The top team area should label the displayed name as the current team and provide a compact selectable team list with scoring status.
+- A scoring item's selection target must be limited to its large dedicated score input, not the whole row. The title, description, and row whitespace remain reading and keypad-dismiss areas.
+- Toast and prompt messages should be plain text only, without emojis or decorative SVG icons.
+- Restored local scores must be sanitized and clamped to each scoring item's maximum before display.
+- Scoring should continue inside the current page even if browser local storage is blocked or unavailable.
+- Resetting a team's scores is destructive and must require an intentional second tap before clearing.
+- When submitting with missing scores, show a plain-text prompt and jump to the first missing scoring item.
+- After a completed submission, show a plain-text prompt, close scoring controls, and return to the top so judges can choose the next team.
+- Keep the whole scoring surface visually lower than the viewport top; current top padding target is 70px on tablet/current review viewport and 18px on narrow screens.
+- The prototype has 7 judge accounts and 1 admin account. Admin sees judge progress and team综合评分.
+- Team综合评分 is calculated from submitted judge totals by removing the highest and lowest scores, then averaging the remaining scores.
+- The current team name in the top header must be allowed to wrap and display fully, including very long team names.
+- Every signed-in role must have a clear logout path. Judges should not need to scroll through the full team list to exit.
+- Judges need a directly visible logout control on the default scoring page, outside the compact top hero.
+- Judges should not see a current-team score display entry link on the scoring page; score display access is for admin/control workflows.
+- In the final competition setup, every tablet must submit to one shared administrator dashboard through a single LAN server.
+- Final cloud deployment should use the existing host MySQL 8.0 with `CONTEST_STORAGE=mysql`; file-backed `data/contest-state.json` storage is for local development, temporary review, or fallback only.
+- Do not add a new database Docker container for this project on the target cloud server; disk usage is already high, so use the host MySQL service and keep the Node process single-instance.
+- Admin and judge accounts must support simultaneous multi-device login for finals operations; logging in on one device must not invalidate the same account on another device.
+- A fallback device must support long-lived independent administrator and judge sessions in separate browser tabs; persist each authentication token in tab-scoped session storage, not shared browser local storage.
+- Server logs must focus on key finals audit events such as login/logout, team edits, score saves/submissions, admin reopen/clear actions, conflicts, startup/shutdown, and service errors; persist them as structured JSONL while avoiding polling noise, passwords, bearer tokens, and unnecessary full score payload dumps.
+- Client state polling must allow at most one in-flight request per scoring or score-display channel, so delayed responses cannot overwrite newer shared state. In MySQL mode, persist only the changed entry, team override, order group, or active-group control rather than rewriting the complete competition state for each score entry.
+- Login, logout, and session expiry must invalidate the current client session generation, abort in-flight state requests, and discard pending score or team-information sync work from the prior session. A stale request must never update, submit, or expire a newly signed-in account.
+- Score save/submission audit logs must identify the actor, target judge/team, operation, submitted state, exact two-decimal item scores, total score, and changed scoring items with previous and new values.
+- The admin page must support editing team display information such as team name and project/product name.
+- Team display information must include each team's registration number, and the administrator must be able to maintain it with team name and project/product name.
+- Official team registration/team numbers must be accurate and editable in team management; administrators are responsible for keeping the number and team name correctly paired.
+- Do not display or edit organization identity information anywhere in the judging, admin, login, or score display surfaces; avoid exposing team origin associations to judges.
+- Admin team information editing must preserve in-progress edits and just-saved values without being overwritten by background server polling.
+- Admin must have enough emergency control for finals operations, including reopening an accidental judge submission and clearing a judge's score for a specific team with single-click actions rather than double-click or two-tap confirmation.
+- Add a dedicated team score display page for finals score presentation.
+- The team score display page should feel like an AI competition display: dark, tech-forward, cool, high-contrast, and inspired by MotionSites-style section design, while keeping the judging and admin surfaces operational.
+- The score display page must be landscape-first and show one team at a time, not a full multi-team leaderboard.
+- The single-team score display should use a static premium deep-blue background image, centered editorial content, and premium typography.
+- Avoid cheap animated grid/track effects on the score display background; keep background motionless, restrained, and high-end.
+- The single-team score display should show the selected team's composite score, anonymous submitted judge total scores, and enlarged highest/lowest removed scores.
+- The score display page should not show the top brand/header copy.
+- The score display page should label submitted judge total score cards as 评委1, 评委2, etc. for readability; these labels are display-order labels, not judge identities.
+- The score display page should not show server connection status or timestamps.
+- Highest and lowest score callouts on the score display page should be visually larger and easier to read.
+- The score display page is intended for large-screen projection/control displays and must preserve a 16:9 stage ratio; use centered letterboxing/pillarboxing instead of stretching the composition on non-16:9 screens.
+- On the score display page, the team identity block should be large enough for big-screen viewing distance: make the team name instantly recognizable, show project/product information if useful, and do not show organization identity information in the main identity block.
+- The single-team score display must make the computed composite score the dominant visual focus; position and size it larger than the team identity and judge-total details.
+- The control-screen workflow can show a previous team's score after the next team finishes roadshow; the display page should support selecting teams by URL query and keyboard navigation while keeping visible controls minimal.
+- The score display page top control should include a compact selectable team list so control staff can jump directly to any team's score display.
+- In the score display page team selector, the selected team row must remain high-contrast and readable against its selected background.
+- Score display page top controls and team selector rows must keep readable light text on dark backgrounds in hover, focus, active, expanded, and selected states.
+- The admin page's current-team display entry should look like a deliberate control-screen action, not a plain text link.
+- The score display page should not show current team codes such as `GZ08` in visible selector or identity areas; use appearance order labels such as `1/20` in the compact top selector/control.
+- On the score display page, show the highest and lowest removed scores as a vertical stack rather than side-by-side.
+- The login page should visually align with the score display page's premium deep-blue competition display language while remaining clear and operational for judges and admins.
+- Login page credentials must not be prefilled, and the login page must not show account cards.
+- The login page should not show a public score display page entry link.
+- Judge login accounts are `001` through `007`, with each password matching the account number; the admin account is `admin` with password `admin123`.
+- On the score display page, keep the previous/current/next team control centered at the top of the 16:9 stage.
+- On the score display page, keep the team selector typography compact and reserve enough width for long team names; long names must remain readable without pushing the group/order or status columns out of view.
+- On the score display page, the team selector should open on the selected team's group and list only that group by default; cross-group navigation must use an explicit group switcher rather than mixing every group into one continuous list.
+- On the score display page, place the team identity and composite score together in the upper-right area, and keep that block compact rather than oversized.
+- On the score display page, use the center stage to show every anonymous submitted judge score in the team's frozen roster snapshot; the standard panel has 7 judges, but invited judges may change that count.
+- On the score display page, reveal anonymous judge scores in a shuffled/staggered order rather than showing them as a sorted row.
+- On the score display page, anonymous judge score cards should be large for projection viewing; current target is about 30% larger than the first centered-card version.
+- On the score display page, place the team identity block in the upper-left area and keep it large enough for projection viewing.
+- On the score display page, keep the upper-left team identity block wide enough to comfortably show long team names.
+- On the score display page, the team final/composite score must be visually distinct from judge score cards and read immediately as the final team result.
+- On the score display page, the team final/composite score module must not repeat the current team name; keep the team name in the upper-left identity block.
+- On the score display page, the team final/composite score module must visibly label the value as "队伍总分".
+- On the score display page, the upper-left team identity block should visibly label the name with "队伍名称 /" so the displayed text is understandable at a glance.
+- On the score display page, the upper-left team identity block should show the team's registration/team number.
+- On the score display page, mixed Chinese/English team names need aligned premium typography: use a CJK/Latin-compatible title font stack and style Latin fragments separately so English letters do not look vertically misaligned.
+- On the score display page, the team final/composite score module should not show English labels or vertical-line decoration.
+- On the score display page, the team final/composite score module should show only the computed score value, without a "/ 100" denominator.
+- On the score display page, the team final/composite score module should use a frosted, rough-edged glass texture.
+- On the score display page, label removed extreme scores as "去掉最高分" and "去掉最低分", with the removed highest score at bottom-left and the removed lowest score at bottom-right.
+- The score display and login background image should read as high-end, simple, designed, deep technology blue: restrained premium stage lighting, clean negative space, and no cheap grid/track clutter.
+- Admin can adjust each group’s post-draw team appearance order, with drag sorting and explicit save/cancel/default actions; the saved order must persist on the shared server and drive judge navigation, admin lists, and score display selection.
+- A judge's new or restored session must start on the first team in the server-saved order for the active group. When server polling receives a reordered list during scoring, retain the current team ID so in-progress scores never jump to another team.
+- Admin should not show the duplicate team composite-score result list beneath the appearance-order panel.
+- The competition includes a 中职组 with 20 official teams, numbered `ZZ01` through `ZZ20`.
+- Judges should not see or operate group selection; the current judging group is controlled by the administrator and synchronized from the shared server.
+- Judges should not manage, browse, or navigate teams independently; the administrator assigns the scoring team and judges score only the team currently assigned to them.
+- The scoring numeric keypad should actively return into view when a judge selects a scoring item, while keeping the focused scoring item visible above it.
+- The judge submit action must remain directly visible while the numeric keypad is open; judges must not need to collapse the keypad to find or use "提交评分".
+- The administrator is the sole operator for dispatching the current team to score and evaluate; judges follow that assignment rather than choosing a team themselves.
+- The administrator backend must support adding and maintaining teams and judge accounts.
+- Score presentation must be launched and controlled from the administrator workflow, not exposed as a judge-side entry point.
+- Add a dedicated overall team ranking page that shows team ranking, registration number, team name, submitted judge count, and composite score.
+- The administrator surface should evolve into a standard operational backoffice panel rather than a single long scoring dashboard.
+- The team management page should keep team editing comfortable: use a compact selected-team summary, grouped fields, and a distinct add-team area rather than one long loose maintenance form.
+- Team management editing should keep the administrator in control: show an explicit saved/unsaved state, provide an in-place cancel action, protect dirty edits from accidental team/group switching, and label the registration-number/team-name pairing in the selected-team summary.
+- In MySQL finals operation, clearing rehearsal data should clear score entries only; preserve team display overrides, draw order, and administrator current-group control unless a full competition reset is explicitly requested.
+- The score display and ranking pages keep the premium deep-blue projection theme, while login, judging, and admin surfaces use a clear light white operational theme with strong text contrast.
+- Admin default views should use progressive disclosure: show essential operational summaries first and keep full judge/team detail tables collapsed until explicitly opened.
+- For admin and judge surfaces, prioritize legibility over compactness: use larger readable text, dark high-contrast secondary labels, and visible focus states that remain clear on white backgrounds.
+- Mid-competition judge enrollment must default to future assignments: create the account and add it to the planned roster atomically, keep the current and historical team roster snapshots unchanged, and state the effective scope explicitly in the admin UI.
+- The admin judge-management page uses a light master-detail workspace: show the locked effective roster as a compact status band, keep future planned-roster editing collapsed, provide a searchable account directory on the left, and edit only the selected account on the right with password reset separated from basic profile changes.
+- When an administrator disables or archives a judge who is still in the future planned roster, the account update must explicitly and atomically remove that judge from the planned roster using both account and roster revisions. Judges in the current open team snapshot remain protected and must be replaced first; re-enabling an account must not automatically add it back to the roster.
+- In production, opening any competition group must be blocked until the signed-in administrator has changed the seeded initial password; the setup page must show a direct path to the administrator password editor.
+- Competition groups run on different days and may use different team and judge counts. Provide one administrator pre-start module where each group independently selects its participating teams and judges, shows the resulting counts, and is explicitly opened for scoring; freeze that group configuration after opening so unused groups and historical group rosters cannot affect the current competition day.
+- The unified pre-start module must support emergency reopening. Before any score exists, administrators can withdraw the opening and edit the group configuration; after scoring begins, emergency reopening requires an intentional second confirmation, clears only that group's scores and roster snapshots, and preserves team information, registration numbers, draw order, and accounts so team and judge counts can be corrected and the group opened again.
+- The pre-start setup page must show the selected group's live competition status and progress, including the current workflow phase, completed-team count, overall percentage, current team, and current judge-submission count.
+- After every active team in an opened group has a final score, the administrator must explicitly close that competition group. Closing is a versioned, audited lifecycle action that locks the group as ended, clears the active-group control, advances the assignment revision, and sends judges back to the waiting state; the workflow must not label an open group as fully ended before this action succeeds.
+- Team management must allow administrators to add and delete teams without a fixed team-count limit. Teams that simply do not participate on a competition day remain in the team directory and are excluded in pre-start setup; deletion is for mistaken or obsolete records and must preserve scoring history and frozen competition rosters.
+- Competition groups run as separate events on dates chosen by the organizing committee; only one administrator-selected group is operated at a time. The standard panel has 7 judges, but invited judges may change the configured count during testing or finals preparation, so do not hard-code exactly 7 judges.
+- Result publication timing is controlled by the administrator. The normal operating recommendation is to finish scoring the first three teams without publishing them, then publish those three scores in appearance order before dispatching the fourth team; from the fourth team onward, recommend publishing each team's final score immediately after its roadshow. Keep this as guided workflow rather than a server-side publication lock.
+- Every administrator module tab in the backoffice navigation must support middle-click and Ctrl/Command-click opening in a new browser tab for multi-display operation. Each opened tab receives its own server session stored only in that tab's session storage; never put administrator bearer tokens in the URL or shared local storage.
+- When an administrator signs in again or moves to another device, the competition-control page must reconstruct the current phase, current team, submitted/expected judge count, recommended next team, and dispatch blocking reason from shared server state. Once the current team is complete, the dispatch selector must default to the recommended next team instead of remaining on the current team and causing a duplicate-dispatch error.
+- The administrator dispatch area must distinguish an incomplete roster from the exceptional state where the visible submitted count is full but the assignment has not yet been confirmed final by the server; show the exact reason and keep normal dispatch locked until the server state is final.
+- The administrator score-publication page must present the first three teams and all later participating teams in one consistent, searchable selection list; ordinary polling must never reset an administrator's in-progress team choice.
+- A team becomes eligible for temporary score display as soon as any one judge has submitted. Later judge submissions should update the displayed anonymous scores automatically; the composite score remains unavailable until the calculation has enough submitted scores.
+- The Team Management appearance-order panel must list and reorder only the teams selected in that group's saved pre-start competition setup. Keep every group team in the editable team directory; when saving the configured subset order, preserve excluded teams and merge the subset back into the server's complete group-order payload.
+- Before any team score is published, the score display page must show a dedicated promotional waiting state using the exact slogan “AI赋能跨电　数智融通东盟” on the existing premium deep-blue background, without showing team identities or live scores.
+- The administrator score-publication page must provide a direct control that starts the score presentation from the first participating team in saved appearance order. It stays unavailable until that first team has at least one submitted judge score; once started, the existing team-selection and publication workflow remains unchanged.
+- The existing administrator workflow action for publishing the opening three-team batch must immediately publish the first team's final score instead of only navigating to the publication page.
+- Withdrawing the current score display returns the projection screen to the promotional slogan state.
+- Keep the score result and promotional slogan as separate projection routes: `/scoreboard` is the score page and `/scoreboard/slogan` is the slogan page. The administrator opens the controlled projection with the non-sensitive `live=1` marker; publication controls must make that already-open projection switch between the two URLs, while direct score URL/team previews remain independent and server polling stays as the cross-device fallback.
+- Do not show a third score-display empty or waiting screen. If the score route has no displayable score, immediately replace its URL with the slogan route and keep the slogan artwork visible during the transition.
+- The live slogan route must remain stable when a stale `temporary` or `final` publication points to a team with zero submitted scores. Only enter the score route when the scoreboard payload includes a display team and at least one submitted score; the slogan and score routes must never redirect back and forth.
+- Exception for administrator-controlled team navigation: when control staff select a team with zero submitted scores, keep that team selected and show a premium waiting-for-scoring identity page with its team name and registration/team number. Do not jump back to a previously scored team. Once the first judge submits, replace the waiting identity state with the normal live score presentation.
+- On that waiting-for-scoring identity page, compact mixed Chinese/English team names such as `Flyelep飞象全球电商内容智能体` should stay on one line when they fit the 16:9 stage; genuinely long names should continue to wrap safely.
+- The administrator emergency page must support assigning one completed historical team back to one specific judge for either retain-and-edit or clear-and-rescore. This independent task must not change the globally dispatched current team, interrupt other judges, or alter any current-team scores.
+- Historical single-judge rescore tasks use the historical team's frozen judge roster, require an audited reason, remain visible as active emergency tasks, and close atomically when the specified judge resubmits. The judge then returns immediately to the latest globally dispatched team.
+- Ordinary administrator polling must not reset an in-progress historical-rescore form draft. Clearing one judge's historical score requires one explicit confirmation checkbox and one action click, not a second-click timeout pattern.

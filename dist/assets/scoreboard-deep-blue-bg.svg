@@ -1,0 +1,64 @@
+<svg width="1920" height="1080" viewBox="0 0 1920 1080" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1920" height="1080" fill="#061125"/>
+  <defs>
+    <radialGradient id="topGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(474 186) rotate(48.4) scale(802 540)">
+      <stop stop-color="#1F75FF" stop-opacity="0.52"/>
+      <stop offset="0.46" stop-color="#0A3B8D" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#061125" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rightGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1438 318) rotate(126.6) scale(598 500)">
+      <stop stop-color="#3DD7FF" stop-opacity="0.3"/>
+      <stop offset="0.58" stop-color="#123B82" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#061125" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="horizon" x1="0" y1="766" x2="1920" y2="766" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#061125" stop-opacity="0"/>
+      <stop offset="0.28" stop-color="#5CB8FF" stop-opacity="0.12"/>
+      <stop offset="0.68" stop-color="#9ADFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#061125" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="floorFade" x1="960" y1="580" x2="960" y2="1080" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B2F6D" stop-opacity="0"/>
+      <stop offset="0.48" stop-color="#0C2F6A" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#020716" stop-opacity="0.82"/>
+    </linearGradient>
+    <linearGradient id="diagonalSoft" x1="304" y1="1032" x2="1750" y2="616" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DD3FC" stop-opacity="0"/>
+      <stop offset="0.52" stop-color="#7DD3FC" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#7DD3FC" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softBlur" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+    <pattern id="microGrid" width="72" height="72" patternUnits="userSpaceOnUse">
+      <path d="M72 0H0V72" stroke="#A8D8FF" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+    <pattern id="fineGrid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M36 0H0V36" stroke="#FFFFFF" stroke-opacity="0.026" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#topGlow)"/>
+  <rect width="1920" height="1080" fill="url(#rightGlow)"/>
+  <rect width="1920" height="1080" fill="url(#microGrid)"/>
+  <rect width="1920" height="1080" fill="url(#fineGrid)" opacity="0.7"/>
+  <g opacity="0.42" filter="url(#softBlur)">
+    <ellipse cx="1002" cy="702" rx="724" ry="94" fill="#2563EB" fill-opacity="0.36"/>
+    <ellipse cx="1304" cy="734" rx="456" ry="62" fill="#38BDF8" fill-opacity="0.16"/>
+  </g>
+  <rect y="580" width="1920" height="500" fill="url(#floorFade)"/>
+  <rect y="680" width="1920" height="2" fill="url(#horizon)"/>
+  <path d="M157 1047C604 960 1074 866 1795 720" stroke="url(#diagonalSoft)" stroke-width="2"/>
+  <path d="M336 1080C706 994 1098 907 1694 784" stroke="url(#diagonalSoft)" stroke-width="1.4" opacity="0.68"/>
+  <path d="M105 924C510 865 934 814 1676 766" stroke="#9ADFFF" stroke-opacity="0.09" stroke-width="1.5"/>
+  <path d="M0 748H1920" stroke="#DFF6FF" stroke-opacity="0.075"/>
+  <path d="M0 808H1920" stroke="#DFF6FF" stroke-opacity="0.05"/>
+  <path d="M0 888H1920" stroke="#DFF6FF" stroke-opacity="0.034"/>
+  <g opacity="0.28">
+    <path d="M356 0V1080" stroke="#DFF6FF" stroke-opacity="0.06"/>
+    <path d="M684 0V1080" stroke="#DFF6FF" stroke-opacity="0.04"/>
+    <path d="M1012 0V1080" stroke="#DFF6FF" stroke-opacity="0.05"/>
+    <path d="M1340 0V1080" stroke="#DFF6FF" stroke-opacity="0.04"/>
+    <path d="M1668 0V1080" stroke="#DFF6FF" stroke-opacity="0.05"/>
+  </g>
+  <rect width="1920" height="1080" fill="#020716" opacity="0.08"/>
+</svg>
