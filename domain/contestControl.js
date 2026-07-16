@@ -903,7 +903,6 @@ export function dispatchAssignment(state, { teamId, expectedRevision, force = fa
   const forcedReason = cleanReason(reason);
   const isReplacingIncompleteAssignment = assignment.teamId && assignment.teamId !== targetTeam.id && assignment.status !== "final" && assignment.status !== "closed";
   if (isReplacingIncompleteAssignment && !force) fail(409, "上一队尚未完成有效名册提交，不能派发下一队");
-  if (isReplacingIncompleteAssignment && forcedReason.length < 3) fail(400, "强制切换必须填写原因");
 
   const roster = getActiveRoster(state);
   if (roster.length < 3) fail(409, "有效评分名册不足 3 位启用评委，不能派发");

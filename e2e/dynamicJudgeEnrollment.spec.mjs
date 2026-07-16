@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { allItems } from "../shared/scoringRules.js";
 
 const baseURL = process.env.VISUAL_BASE_URL || "http://127.0.0.1:8899";
+const artifactDir = process.env.VISUAL_ARTIFACT_DIR || "test-results";
 
 async function apiLogin(request, username, password) {
   const response = await request.post(`${baseURL}/api/login`, { data: { username, password } });
@@ -65,7 +66,7 @@ async function captureScoreboardSet(page, teamId, judgeCount, label, adminToken)
     { width: 1024, height: 768, suffix: "1024x768" },
   ]) {
     await assertScoreboardGeometry(page, viewport, teamId, judgeCount, adminToken);
-    await page.screenshot({ path: `test-results/scoreboard-${label}-${viewport.suffix}.png` });
+    await page.screenshot({ path: `${artifactDir}/scoreboard-${label}-${viewport.suffix}.png` });
     if (viewport.suffix === "1920x1080") {
       await expect(page).toHaveScreenshot(`scoreboard-${label}-1920x1080.png`, {
         animations: "disabled",
@@ -107,7 +108,7 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   await dialog.getByRole("button", { name: "新增评委", exact: true }).click();
   await expect(page.getByText("评委账号已创建，将从下一支首次派发队伍起参与评分")).toBeVisible();
   await expect(page.getByText("当前队按 7 位评委评分，后续计划为 8 位")).toBeVisible();
-  await page.screenshot({ path: "test-results/admin-future-judge-enrollment.png", fullPage: true });
+  await page.screenshot({ path: `${artifactDir}/admin-future-judge-enrollment.png`, fullPage: true });
 
   const adminToken = await apiLogin(request, "admin", "admin123");
   let stateResponse = await request.get(`${baseURL}/api/state`, { headers: auth(adminToken) });
@@ -117,7 +118,7 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   await page.locator(".admin-emergency-shortcut").click();
   await expect(page.getByRole("heading", { name: "应急处置" })).toBeVisible();
   await expect(page.locator(".admin-emergency-options article")).toHaveCount(3);
-  await page.screenshot({ path: "test-results/admin-emergency-center.png", fullPage: true });
+  await page.screenshot({ path: `${artifactDir}/admin-emergency-center.png`, fullPage: true });
   await page.getByRole("button", { name: "处理当前队评委" }).click();
   await expect(page.locator(".judge-matrix-panel")).toBeFocused();
   await page.getByRole("button", { name: "替换评委" }).first().click();

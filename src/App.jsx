@@ -360,6 +360,16 @@ function Toast({ message, className = "" }) {
   return <div className={["toast", className, message ? "is-visible" : ""].filter(Boolean).join(" ")} role="status" aria-live="polite">{message}</div>;
 }
 
+function ConnectionStatus({ status, className = "" }) {
+  const tone = ["checking", "online", "offline"].includes(status?.tone) ? status.tone : "checking";
+  return (
+    <div className={["sync-status", className, tone].filter(Boolean).join(" ")} role="status" aria-live="polite" aria-atomic="true">
+      <span className="sync-status-dot" aria-hidden="true" />
+      <span>{status?.label || "正在连接评分服务器"}</span>
+    </div>
+  );
+}
+
 function ScoreboardPage() {
   const [payload, setPayload] = useState(null);
   const [requestedTeamId, setRequestedTeamId] = useState(() => new URLSearchParams(window.location.search).get("teamId") || "");
@@ -920,7 +930,6 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   });
   const [dispatchSelection, setDispatchSelection] = useState({ teamId: "", assignmentRevision: null });
   const [forceDispatch, setForceDispatch] = useState(false);
-  const [forceReason, setForceReason] = useState("");
   const [displayTeamId, setDisplayTeamId] = useState(() => state.displaySelection?.teamId || "");
   const [displaySearch, setDisplaySearch] = useState("");
   const [managedTeamId, setManagedTeamId] = useState("");
@@ -954,7 +963,6 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   const deleteTeamIntentTimerRef = useRef(null);
   const dispatchSelectRef = useRef(null);
   const judgeMatrixRef = useRef(null);
-  const forceReasonRef = useRef(null);
   const setupActionsRef = useRef(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const teams = state.teams ?? [];
@@ -1080,8 +1088,10 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   const selectedDispatchTeam = teams.find((team) => team.id === dispatchTeamId) ?? null;
   const isForcedDispatch = forceDispatch && !dispatchControl.canDispatch;
   const dispatchDisabled = !dispatchTeamId
-    || (!dispatchControl.canDispatch && !isForcedDispatch)
-    || (isForcedDispatch && forceReason.trim().length < 3);
+    || (!dispatchControl.canDispatch && !isForcedDispatch);
+  const forcedDispatchTargetLabel = selectedDispatchTeam
+    ? `强制切换到：${selectedDispatchTeam.teamName}`
+    : "确认强制切换";
   const setupProgress = selectedSetupWorkflow?.progress ?? {
     completedTeams: 0,
     totalTeams: setupDraft.teamIds.length,
@@ -1154,7 +1164,6 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
       const target = {
         dispatch: dispatchSelectRef.current,
         judge_matrix: judgeMatrixRef.current,
-        force_reason: forceReasonRef.current,
         setup_actions: setupActionsRef.current,
       }[navigationIntent];
       if (!target) {
@@ -1166,7 +1175,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
       setNavigationIntent("");
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [forceDispatch, navigationIntent, showJudgeDetails, view]);
+  }, [navigationIntent, showJudgeDetails, view]);
 
   useEffect(() => {
     const enteringDisplay = view === "display" && previousAdminViewRef.current !== "display";
@@ -1276,7 +1285,6 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     if (!activeCompetitionGroupId) return showToast("请先在开赛配置中开启比赛组别");
     if (!dispatchTeamId) return showToast("请选择要派发的队伍");
     if (!dispatchControl.canDispatch && !isForcedDispatch) return showToast(dispatchControl.reason, 5200);
-    if (isForcedDispatch && forceReason.trim().length < 3) return showToast("应急强制切换必须填写至少 3 个字符的原因");
     const result = await runAdminMutation(
       "/api/assignments/dispatch",
       {
@@ -1285,14 +1293,12 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
           teamId: dispatchTeamId,
           revision: currentAssignment.assignmentRevision,
           force: isForcedDispatch,
-          reason: isForcedDispatch ? forceReason : "",
         },
       },
       "派发评分失败",
     );
     if (result) {
       setForceDispatch(false);
-      setForceReason("");
       showToast("当前评分队伍已派发");
     }
   }
@@ -1393,7 +1399,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
 
   function openForcedDispatchEmergency() {
     setForceDispatch(true);
-    setNavigationIntent("force_reason");
+    setNavigationIntent("dispatch");
     changeView("control");
   }
 
@@ -1737,7 +1743,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     <main className="admin-workspace">
       <header className="admin-shell-header">
         <div><span>决赛评分后台</span><h1>赛事运营控制</h1></div>
-        <div className="admin-shell-actions"><div className={`sync-status ${syncStatus.tone}`}>{syncStatus.label}</div><button className="ghost-action admin-emergency-shortcut" type="button" onClick={() => changeView("emergency")}><ShieldAlert size={17} aria-hidden="true" />应急处置</button><button className="ghost-action" type="button" onClick={logout}>退出登录</button></div>
+        <div className="admin-shell-actions"><ConnectionStatus status={syncStatus} /><button className="ghost-action admin-emergency-shortcut" type="button" onClick={() => changeView("emergency")}><ShieldAlert size={17} aria-hidden="true" />应急处置</button><button className="ghost-action" type="button" onClick={logout}>退出登录</button></div>
       </header>
       <nav className="admin-module-nav" aria-label="后台模块">
         {navItems.map(([id, label]) => <a href={`/?adminView=${encodeURIComponent(id)}`} key={id} className={view === id ? "is-selected" : ""} aria-current={view === id ? "page" : undefined} title={`${label}；中键或 Ctrl/⌘ 点击可在新标签页打开`} onClick={(event) => activateAdminView(event, id)} onAuxClick={(event) => openAdminViewFromMiddleClick(event, id)}>{label}</a>)}
@@ -1817,16 +1823,19 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
                 const isCurrent = team.id === currentAssignment.teamId;
                 const isCompleted = Boolean(state.summariesByTeam?.[team.id]?.isFinal);
                 const suffix = isCurrent ? "（当前队）" : isCompleted ? "（已完成）" : "";
-                return <option value={team.id} key={team.id} disabled={isCurrent || isCompleted}>{team.registrationNumber ? `${team.registrationNumber} · ${team.teamName}${suffix}` : `${team.teamName}${suffix}`}</option>;
+                return <option value={team.id} key={team.id} disabled={isCurrent}>{team.registrationNumber ? `${team.registrationNumber} · ${team.teamName}${suffix}` : `${team.teamName}${suffix}`}</option>;
               })}</select></label>
               <div className={`dispatch-readiness is-${dispatchControl.tone}`} role="status">
                 <span>{dispatchControl.label}</span>
                 <strong>{selectedDispatchTeam ? `准备派发：${selectedDispatchTeam.teamName}` : "等待下一步"}</strong>
                 <small>{dispatchControl.reason}</small>
               </div>
-              {!dispatchControl.canDispatch && currentTeam && dispatchTeamId ? <label className="force-toggle"><input type="checkbox" checked={forceDispatch} onChange={(event) => setForceDispatch(event.target.checked)} />应急强制切换</label> : null}
-              {isForcedDispatch ? <label>切换原因<input ref={forceReasonRef} value={forceReason} onChange={(event) => setForceReason(event.target.value)} placeholder="记录现场处置原因" /></label> : null}
-              <button className="primary-action" type="button" disabled={dispatchDisabled} onClick={dispatch}><Send size={17} aria-hidden="true" />{isForcedDispatch ? "确认强制切换" : dispatchControl.actionLabel}</button>
+              {!dispatchControl.canDispatch && currentTeam && dispatchTeamId ? <button className={`force-toggle-button ${forceDispatch ? "is-active" : ""}`} type="button" aria-pressed={forceDispatch} onClick={() => setForceDispatch((current) => !current)}><ShieldAlert size={17} aria-hidden="true" />{forceDispatch ? "取消应急切换" : "应急：改用强制切换"}</button> : null}
+              {isForcedDispatch ? <div className="force-dispatch-note" role="status">
+                <strong>应急切换会立即改派评委端当前队伍</strong>
+                <span>旧派发版本的延迟提交会被拒绝；已保存成绩不会自动清空，可在下方评委矩阵中单独撤回或清空。</span>
+              </div> : null}
+              <button className={isForcedDispatch ? "danger-action" : "primary-action"} type="button" disabled={dispatchDisabled} onClick={dispatch}><Send size={17} aria-hidden="true" />{isForcedDispatch ? forcedDispatchTargetLabel : dispatchControl.actionLabel}</button>
             </div>
           </section>
           <section className="admin-panel control-summary-panel">
@@ -1996,7 +2005,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
           </section>
           <div className="admin-emergency-options">
             <article><div><span>影响一个评委席位</span><h3>当前队评委异常</h3><p>用于误提交、清空重评或评委临时离场。其他评委当前队成绩保持不变。</p></div><dl><div><dt>当前队</dt><dd>{currentTeam?.teamName ?? "未派发"}</dd></div><div><dt>有效评委</dt><dd>{currentRosterCount} 位</dd></div></dl><button className="primary-action" type="button" disabled={!currentTeam} onClick={openCurrentJudgeEmergency}>处理当前队评委<ArrowRight size={17} aria-hidden="true" /></button></article>
-            <article><div><span>影响当前派发</span><h3>必须中断或切换队伍</h3><p>仅在当前队无法继续时使用。必须填写原因，旧派发版本的延迟评分会被拒绝。</p></div><dl><div><dt>当前队</dt><dd>{currentTeam?.teamName ?? "未派发"}</dd></div><div><dt>当前状态</dt><dd>{currentAssignment.status === "scoring" ? "正在评分" : currentAssignment.status === "awaiting_submissions" ? "等待提交" : "无开放评分"}</dd></div></dl><button className="danger-action" type="button" disabled={!currentTeam} onClick={openForcedDispatchEmergency}>进入强制切队<ArrowRight size={17} aria-hidden="true" /></button></article>
+            <article><div><span>影响当前派发</span><h3>必须中断或切换队伍</h3><p>仅在当前队无法继续时使用。旧派发版本的延迟评分会被拒绝。</p></div><dl><div><dt>当前队</dt><dd>{currentTeam?.teamName ?? "未派发"}</dd></div><div><dt>当前状态</dt><dd>{currentAssignment.status === "scoring" ? "正在评分" : currentAssignment.status === "awaiting_submissions" ? "等待提交" : "无开放评分"}</dd></div></dl><button className="danger-action" type="button" disabled={!currentTeam} onClick={openForcedDispatchEmergency}>进入强制切队<ArrowRight size={17} aria-hidden="true" /></button></article>
             <article><div><span>影响整个组别</span><h3>队伍或评委数量错误</h3><p>返回开赛配置重新核对。本组已有评分时，需要二次确认并清除本组评分与队伍快照。</p></div><dl><div><dt>将清理评分</dt><dd>{state.restartImpactByGroup?.[activeCompetitionGroupId]?.entryCount ?? 0} 条</dd></div><div><dt>仍会保留</dt><dd>队伍资料、顺序、账号</dd></div></dl><button className="danger-action" type="button" disabled={!activeCompetitionGroupId} onClick={openGroupRestartEmergency}>重新配置当前组<ArrowRight size={17} aria-hidden="true" /></button></article>
           </div>
         </section>
@@ -2226,13 +2235,13 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
 
   if (!team || assignment.status === "idle" || assignment.status === "closed" || !isAssignedJudge) {
     const isRosterWaiting = Boolean(team && !isAssignedJudge);
-    return <main className="judge-app judge-waiting"><div className="judge-session-actions"><button className="judge-logout-button" type="button" onClick={logout}>退出登录</button></div><div className={`sync-status judge-sync-status ${syncStatus.tone}`} role="status">{syncStatus.label}</div><section className="judge-waiting-panel"><span>{account.displayName}</span><h1>{isRosterWaiting ? "当前队伍未分配给此评委" : "等待管理员安排评分队伍"}</h1><p>{syncStatus.tone === "offline" ? "当前未连接评分服务器，请保持本页，网络恢复后会自动重连。" : isRosterWaiting ? "请联系管理员确认本队有效评分名册。" : "评分队伍派发后，当前页面会自动进入评分。"}</p></section><Toast message={toast} /></main>;
+    return <main className="judge-app judge-waiting"><div className="judge-session-actions"><button className="judge-logout-button" type="button" onClick={logout}>退出登录</button></div><ConnectionStatus status={syncStatus} className="judge-sync-status" /><section className="judge-waiting-panel"><span>{account.displayName}</span><h1>{isRosterWaiting ? "当前队伍未分配给此评委" : "等待管理员安排评分队伍"}</h1><p>{syncStatus.tone === "offline" ? "当前未连接评分服务器，请保持本页，网络恢复后会自动重连。" : isRosterWaiting ? "请联系管理员确认本队有效评分名册。" : "评分队伍派发后，当前页面会自动进入评分。"}</p></section><Toast message={toast} /></main>;
   }
 
   return (
     <main className={`judge-app is-scoring${isKeypadOpen ? " is-keypad-open" : ""}${canExpandKeypad ? " has-keypad-expand" : ""}`} onPointerDownCapture={beginKeypadDismiss} onPointerUpCapture={completeKeypadDismiss} onPointerCancelCapture={() => { pendingKeypadDismissRef.current = null; }}>
       <div className="judge-session-actions"><button className="judge-logout-button" type="button" onClick={logout}>退出登录</button></div>
-      <div className={`sync-status judge-sync-status ${syncStatus.tone}`} role="status">{syncStatus.label}</div>
+      <ConnectionStatus status={syncStatus} className="judge-sync-status" />
       <Toast message={toast} className="judge-toast-slot" />
       <header className="hero controlled-judge-hero" aria-label="当前评分队伍与总分">
         <div className="controlled-team-name"><span>{isHistoricalRescore ? "应急重评队伍" : "当前评分队伍"}</span><strong>{team.teamName}</strong></div>

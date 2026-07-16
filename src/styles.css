@@ -113,6 +113,9 @@ p {
 }
 
 .sync-status {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
   border: 1px solid #d7e4ec;
   border-radius: 999px;
   background: #f8fbfd;
@@ -122,10 +125,23 @@ p {
   font-weight: 900;
 }
 
+.sync-status-dot {
+  display: none;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
 .sync-status.online {
   border-color: #b9decf;
   background: #e9f7f0;
   color: #24735a;
+}
+
+.sync-status.online .sync-status-dot {
+  background: #15803d;
 }
 
 .sync-status.offline {
@@ -134,13 +150,37 @@ p {
   color: var(--danger);
 }
 
+.sync-status.offline .sync-status-dot {
+  background: #dc2626;
+}
+
 .judge-sync-status {
   position: fixed;
   z-index: 9;
   top: calc(18px + env(safe-area-inset-top));
   left: max(18px, calc((100vw - 768px) / 2 + 18px));
   max-width: min(260px, calc(100vw - 120px));
-  box-shadow: 0 10px 24px rgb(48 74 95 / 0.1);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #475569;
+  padding: 8px 2px;
+}
+
+.judge-sync-status .sync-status-dot {
+  display: block;
+}
+
+.judge-sync-status.online {
+  border-color: transparent;
+  background: transparent;
+  color: #166534;
+}
+
+.judge-sync-status.offline {
+  border-color: transparent;
+  background: transparent;
+  color: #b91c1c;
 }
 
 .group-selector {
@@ -462,7 +502,7 @@ p {
   overscroll-behavior: contain;
   align-content: start;
   grid-auto-rows: max-content;
-  padding: 0 2px 16px 0;
+  padding: 0 2px calc(112px + env(safe-area-inset-bottom)) 0;
 }
 
 .judge-app.is-scoring .dimension-section {
@@ -851,10 +891,10 @@ p {
 }
 
 .submit-bar {
-  position: relative;
-  right: auto;
-  bottom: auto;
-  left: auto;
+  position: fixed;
+  right: max(18px, calc((100vw - 768px) / 2 + 18px));
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  left: max(18px, calc((100vw - 768px) / 2 + 18px));
   z-index: 6;
   display: grid;
   grid-template-columns: minmax(96px, 0.8fr) minmax(0, 1fr) minmax(142px, 1.2fr);
@@ -863,10 +903,10 @@ p {
   border: 1px solid #abc3d2;
   border-radius: 22px;
   background: rgb(255 255 255 / 0.94);
-  box-shadow: 0 18px 50px rgb(31 51 70 / 0.18);
-  width: 100%;
+  box-shadow: 0 10px 36px rgb(31 51 70 / 0.22), 0 2px 10px rgb(31 51 70 / 0.1);
+  width: auto;
   flex: 0 0 auto;
-  margin-top: 20px;
+  margin-top: 0;
   padding: 10px;
   backdrop-filter: blur(18px);
 }
@@ -2629,6 +2669,9 @@ select:focus-visible,
   }
 
   .submit-bar {
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    left: 12px;
     grid-template-columns: 92px minmax(0, 1fr) 132px;
   }
 
@@ -2637,6 +2680,30 @@ select:focus-visible,
     min-height: 50px;
     padding: 0 10px;
     font-size: 14px;
+  }
+}
+
+@media (max-width: 360px) {
+  .submit-bar {
+    grid-template-columns: 72px minmax(64px, 1fr) 112px;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .submit-bar > div {
+    min-width: 0;
+  }
+
+  .submit-bar strong {
+    font-size: 26px;
+  }
+
+  .submit-bar .ghost-action,
+  .submit-bar .primary-action {
+    min-width: 0;
+    min-height: 48px;
+    padding: 0 8px;
+    font-size: 13px;
   }
 }
 
@@ -4553,14 +4620,54 @@ button.single-scoreboard-team-option[aria-selected="true"]:hover:not(:disabled) 
   background: #f8fafc;
 }
 
-.force-toggle {
-  display: flex !important;
+.force-toggle-button {
+  display: inline-flex;
+  gap: 8px;
   align-items: center;
-  gap: 8px !important;
-  color: var(--amber) !important;
+  justify-content: center;
+  min-height: 46px;
+  border: 1px solid rgba(194, 65, 12, 0.48);
+  background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
+  color: #9a3412;
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgb(154 52 18 / 0.12);
 }
 
-.force-toggle input,
+.force-toggle-button:hover,
+.force-toggle-button:focus,
+.force-toggle-button.is-active {
+  border-color: rgba(154, 52, 18, 0.78);
+  background: linear-gradient(180deg, #fed7aa 0%, #fdba74 100%);
+  color: #7c2d12;
+  box-shadow: 0 12px 28px rgb(154 52 18 / 0.2);
+}
+
+.force-toggle-button svg {
+  flex: 0 0 auto;
+}
+
+.force-dispatch-note {
+  display: grid;
+  gap: 5px;
+  border: 1px solid rgba(180, 83, 9, 0.26);
+  border-left: 4px solid #b45309;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #7c2d12;
+  padding: 12px 14px;
+  line-height: 1.55;
+}
+
+.force-dispatch-note strong {
+  color: #7c2d12;
+  font-size: 14px;
+}
+
+.force-dispatch-note span {
+  color: #8a4a0f;
+  font-size: 13px;
+}
+
 .roster-check-list input {
   width: 18px;
   height: 18px;
@@ -6669,7 +6776,7 @@ button.single-scoreboard-team-option[aria-selected="true"]:hover:not(:disabled) 
 
 .controlled-judge-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 16px;
   align-items: center;
   min-height: 76px;
@@ -7165,14 +7272,6 @@ button.single-scoreboard-team-option[aria-selected="true"]:hover:not(:disabled) 
     grid-column: 1 / -1;
   }
 
-  .controlled-judge-hero {
-    grid-template-columns: 1fr;
-  }
-
-  .controlled-judge-hero .score-compact {
-    justify-items: start;
-  }
-
   .single-scoreboard-shell .single-scoreboard-identity {
     width: 56%;
   }
@@ -7188,6 +7287,23 @@ button.single-scoreboard-team-option[aria-selected="true"]:hover:not(:disabled) 
 }
 
 @media (max-width: 620px) {
+  .controlled-judge-hero {
+    gap: 10px;
+    align-items: start;
+  }
+
+  .controlled-team-name strong {
+    font-size: 20px;
+  }
+
+  .controlled-judge-hero .score-compact {
+    min-width: 92px;
+  }
+
+  .controlled-judge-hero .score-compact strong {
+    font-size: 30px;
+  }
+
   .admin-module-nav a {
     padding: 0 12px;
   }
