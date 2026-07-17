@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import mysql from "mysql2/promise";
 import { contestGroups, defaultCandidates, defaultCandidateOrderByGroup, defaultGroupId } from "./shared/contestData.js";
-import { normalizeCompetitionSetup } from "./shared/competitionSetup.js";
+import { getOrderedSetupTeams, normalizeCompetitionSetup } from "./shared/competitionSetup.js";
 import { deriveAdminWorkflowStatus } from "./shared/adminWorkflow.js";
 import {
   createBlankScores,
@@ -979,7 +979,7 @@ function createAccountId(state) {
 function getScoreboardPayload(state, requestedTeamId = "", { controller = false } = {}) {
   const selection = publicDisplaySelection(state.displaySelection);
   const teamOptions = contestGroups.flatMap((group) => {
-    const groupTeams = getOrderedTeams(state, group.id, false);
+    const groupTeams = getOrderedSetupTeams(state, group.id);
     return groupTeams.map((team, index) => {
       const summary = getCompositeSummary(state, team.id);
       const visibleAppearanceOrder = index + 1;
@@ -1000,11 +1000,12 @@ function getScoreboardPayload(state, requestedTeamId = "", { controller = false 
     });
   });
   const requestedTeam = normalizeId(requestedTeamId, 16);
-  const requested = requestedTeam ? getTeamById(state, requestedTeam) : null;
-  const team = requested?.status === "active" ? requested : selection.teamId ? getTeamById(state, selection.teamId) : null;
+  const requestedOption = requestedTeam ? teamOptions.find((option) => option.id === requestedTeam) ?? null : null;
+  const publishedOption = selection.teamId ? teamOptions.find((option) => option.id === selection.teamId) ?? null : null;
+  const selectedOption = requestedTeam ? requestedOption : publishedOption;
+  const team = selectedOption ? getTeamById(state, selectedOption.id) : null;
   const summary = team ? getCompositeSummary(state, team.id) : null;
-  const selectedOption = teamOptions.find((option) => option.id === team?.id) ?? null;
-  const isUrlSelected = Boolean(controller && requested?.status === "active");
+  const isUrlSelected = Boolean(controller && requestedOption);
   const canDisplay = Boolean(
     team?.status === "active" &&
       (isUrlSelected
@@ -1035,7 +1036,7 @@ function getRankingsPayload(state, requestedGroupId = "") {
     label: group.label,
     active: group.id === selectedGroupId,
   }));
-  const groupTeams = getOrderedTeams(state, selectedGroupId, false);
+  const groupTeams = getOrderedSetupTeams(state, selectedGroupId);
   const sortedTeams = groupTeams
     .map((team) => {
       const summary = getCompositeSummary(state, team.id);

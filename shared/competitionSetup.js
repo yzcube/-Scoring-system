@@ -1,5 +1,12 @@
 import { contestGroups } from "./contestData.js";
 
+export function getOrderedSetupTeams(state, groupId) {
+  const configuredTeamIds = new Set(state.competitionSetup?.groups?.[groupId]?.teamIds ?? []);
+  return (state.teams ?? [])
+    .filter((team) => team.groupId === groupId && team.status === "active" && configuredTeamIds.has(team.id))
+    .sort((left, right) => left.appearanceOrder - right.appearanceOrder || left.id.localeCompare(right.id));
+}
+
 function defaultNormalizeId(value) {
   const id = String(value ?? "").trim();
   return /^[A-Za-z0-9_-]{1,32}$/.test(id) ? id : "";

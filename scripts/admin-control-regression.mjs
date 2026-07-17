@@ -140,12 +140,49 @@ async function main() {
     const initialJudgeWrite = await writeEntry(baseUrl, judgeTokens[0], "001", "GZ01", createEntry());
     assert(initialJudgeWrite.status === 409, "judge write without an assignment must be rejected");
 
+    const configuredTeamIds = ["GZ01", "GZ02"];
+    const savedSetup = await requestJson(baseUrl, "/api/competition-setup/gaozhi", {
+      method: "PUT",
+      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        teamIds: configuredTeamIds,
+        judgeIds: ["001", "002", "003", "004", "005", "006", "007"],
+        revision: state.payload.competitionSetup.groups.gaozhi.revision,
+      }),
+    });
+    assert(savedSetup.status === 200, `competition setup save failed: ${savedSetup.payload.error ?? ""}`);
+
+    const rankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi", { headers: authHeaders(adminToken) });
+    assert(rankings.status === 200, `rankings read failed: ${rankings.payload.error ?? ""}`);
+    assert(
+      JSON.stringify(rankings.payload.rankings.map((team) => team.id)) === JSON.stringify(configuredTeamIds),
+      "rankings must include only teams selected for the competition",
+    );
+
+    const controlledScoreboard = await requestJson(baseUrl, "/api/scoreboard?control=1", { headers: authHeaders(adminToken) });
+    assert(controlledScoreboard.status === 200, `controlled scoreboard read failed: ${controlledScoreboard.payload.error ?? ""}`);
+    const scoreboardTeamIds = controlledScoreboard.payload.teamOptions
+      .filter((team) => team.groupId === "gaozhi")
+      .map((team) => team.id);
+    assert(
+      JSON.stringify(scoreboardTeamIds) === JSON.stringify(configuredTeamIds),
+      `scoreboard team options must include only teams selected for the competition: ${scoreboardTeamIds.join(",")}`,
+    );
+    const unconfiguredPreview = await requestJson(baseUrl, "/api/scoreboard?control=1&teamId=GZ03", { headers: authHeaders(adminToken) });
+    assert(unconfiguredPreview.status === 200, `unconfigured scoreboard preview failed: ${unconfiguredPreview.payload.error ?? ""}`);
+    assert(!unconfiguredPreview.payload.displayTeam, "scoreboard must not preview a team outside the competition setup");
+
     const openedGroup = await requestJson(baseUrl, "/api/competition-setup/gaozhi/open", {
       method: "POST",
       headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ revision: state.payload.competitionSetup.groups.gaozhi.revision }),
+      body: JSON.stringify({ revision: savedSetup.payload.competitionSetup.groups.gaozhi.revision }),
     });
     assert(openedGroup.status === 200, `competition setup open failed: ${openedGroup.payload.error ?? ""}`);
+    const openedRankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi", { headers: authHeaders(adminToken) });
+    assert(
+      JSON.stringify(openedRankings.payload.rankings.map((team) => team.id)) === JSON.stringify(configuredTeamIds),
+      "opened competition rankings must retain the configured team scope",
+    );
 
     const dispatch = await requestJson(baseUrl, "/api/assignments/dispatch", {
       method: "POST",
