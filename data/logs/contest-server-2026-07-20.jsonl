@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-20T01:10:53.770Z","level":"warn","event":"server_shutdown_requested","pid":51501,"port":8776,"host":"0.0.0.0","signal":"SIGINT","activeSessions":0}
+{"timestamp":"2026-07-20T01:10:53.791Z","level":"info","event":"server_shutdown_complete","pid":51501,"port":8776,"host":"0.0.0.0","signal":"SIGINT"}

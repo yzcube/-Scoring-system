@@ -1,10 +1,4 @@
-function getOrderedSetupTeams(state, groupId) {
-  const setup = state.competitionSetup?.groups?.[groupId];
-  const configuredIds = new Set(setup?.teamIds ?? []);
-  return (state.teams ?? [])
-    .filter((team) => team.groupId === groupId && team.status === "active" && configuredIds.has(team.id))
-    .sort((left, right) => left.appearanceOrder - right.appearanceOrder);
-}
+import { getOrderedSetupTeams } from "./competitionSetup.js";
 
 function getTeamLabel(team, index) {
   return `${index + 1}. ${team.teamName}`;

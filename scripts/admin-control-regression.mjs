@@ -75,9 +75,11 @@ function fullScores() {
   return Object.fromEntries(itemIds.map((itemId) => [itemId, itemMax[itemId]]));
 }
 
-function createEntry(serverRevision = 0, submitted = true) {
+function createEntry(serverRevision = 0, submitted = true, total = 100) {
+  const scores = fullScores();
+  scores.reportQuality = itemMax.reportQuality - (100 - total);
   return {
-    scores: fullScores(),
+    scores,
     submitted,
     updatedAt: "admin-control-regression",
     clientUpdatedAt: Date.now(),
@@ -140,12 +142,49 @@ async function main() {
     const initialJudgeWrite = await writeEntry(baseUrl, judgeTokens[0], "001", "GZ01", createEntry());
     assert(initialJudgeWrite.status === 409, "judge write without an assignment must be rejected");
 
+    const configuredTeamIds = ["GZ01", "GZ02"];
+    const savedSetup = await requestJson(baseUrl, "/api/competition-setup/gaozhi", {
+      method: "PUT",
+      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        teamIds: configuredTeamIds,
+        judgeIds: ["007", "003", "001", "006", "002", "005", "004"],
+        revision: state.payload.competitionSetup.groups.gaozhi.revision,
+      }),
+    });
+    assert(savedSetup.status === 200, `competition setup save failed: ${savedSetup.payload.error ?? ""}`);
+
+    const rankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi", { headers: authHeaders(adminToken) });
+    assert(rankings.status === 200, `rankings read failed: ${rankings.payload.error ?? ""}`);
+    assert(
+      JSON.stringify(rankings.payload.rankings.map((team) => team.id)) === JSON.stringify(configuredTeamIds),
+      "rankings must include only teams selected for the competition",
+    );
+
+    const controlledScoreboard = await requestJson(baseUrl, "/api/scoreboard?control=1", { headers: authHeaders(adminToken) });
+    assert(controlledScoreboard.status === 200, `controlled scoreboard read failed: ${controlledScoreboard.payload.error ?? ""}`);
+    const scoreboardTeamIds = controlledScoreboard.payload.teamOptions
+      .filter((team) => team.groupId === "gaozhi")
+      .map((team) => team.id);
+    assert(
+      JSON.stringify(scoreboardTeamIds) === JSON.stringify(configuredTeamIds),
+      `scoreboard team options must include only teams selected for the competition: ${scoreboardTeamIds.join(",")}`,
+    );
+    const unconfiguredPreview = await requestJson(baseUrl, "/api/scoreboard?control=1&teamId=GZ03", { headers: authHeaders(adminToken) });
+    assert(unconfiguredPreview.status === 200, `unconfigured scoreboard preview failed: ${unconfiguredPreview.payload.error ?? ""}`);
+    assert(!unconfiguredPreview.payload.displayTeam, "scoreboard must not preview a team outside the competition setup");
+
     const openedGroup = await requestJson(baseUrl, "/api/competition-setup/gaozhi/open", {
       method: "POST",
       headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ revision: state.payload.competitionSetup.groups.gaozhi.revision }),
+      body: JSON.stringify({ revision: savedSetup.payload.competitionSetup.groups.gaozhi.revision }),
     });
     assert(openedGroup.status === 200, `competition setup open failed: ${openedGroup.payload.error ?? ""}`);
+    const openedRankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi", { headers: authHeaders(adminToken) });
+    assert(
+      JSON.stringify(openedRankings.payload.rankings.map((team) => team.id)) === JSON.stringify(configuredTeamIds),
+      "opened competition rankings must retain the configured team scope",
+    );
 
     const dispatch = await requestJson(baseUrl, "/api/assignments/dispatch", {
       method: "POST",
@@ -217,10 +256,10 @@ async function main() {
 
     for (let index = 0; index < judgeTokens.length; index += 1) {
       const judgeId = String(index + 1).padStart(3, "0");
-      const saved = await writeEntry(baseUrl, judgeTokens[index], judgeId, "GZ02", createEntry(), secondAssignment.assignmentRevision);
+      const saved = await writeEntry(baseUrl, judgeTokens[index], judgeId, "GZ02", createEntry(0, true, 91 + index), secondAssignment.assignmentRevision);
       assert(saved.status === 200 && saved.payload.entry?.submitted, `${judgeId} final submission failed`);
     }
-    const reliefSaved = await writeEntry(baseUrl, reliefToken, reliefId, "GZ02", createEntry(), secondAssignment.assignmentRevision);
+    const reliefSaved = await writeEntry(baseUrl, reliefToken, reliefId, "GZ02", createEntry(0, true, 98), secondAssignment.assignmentRevision);
     assert(reliefSaved.status === 200 && reliefSaved.payload.entry?.submitted, "relief judge final submission failed");
 
     const finalState = await requestJson(baseUrl, "/api/state", { headers: authHeaders(adminToken) });
@@ -240,6 +279,11 @@ async function main() {
     const displayed = await requestJson(baseUrl, "/api/scoreboard");
     assert(displayed.status === 200 && displayed.payload.displaySelection?.publicationStatus === "final", "scoreboard did not expose final publication");
     assert(displayed.payload.displayTeam?.id === "GZ02", "scoreboard did not expose the selected team");
+    assert(
+      JSON.stringify(displayed.payload.displaySummary?.anonymousScores?.map((item) => item.score)) ===
+        JSON.stringify(["91.00", "92.00", "93.00", "94.00", "95.00", "96.00", "97.00", "98.00"]),
+      "scoreboard judge scores must follow account order without exposing judge identities",
+    );
 
     const submittedEntry = finalState.payload.entriesByJudge?.["001"]?.GZ02;
     const reopen = await writeEntry(

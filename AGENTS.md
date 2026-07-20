@@ -7,6 +7,20 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
 Prototype feedback:
+- The formal projection routes `/scoreboard` and `/scoreboard/slogan` must use the confirmed `/scoreboard/demo-tech` visual language across result, waiting, promotional, partial-score, controller, long-name, and dynamic-judge states while preserving polling, publication, navigation, and API behavior. Keep all demo and backup routes available for comparison and rollback.
+- Keep a separately named `/scoreboard/demo-tech-nine-judges` variant based on `/scoreboard/demo-tech`; it adds visible positions for 评委8 and 评委9 while keeping all nine judge cards readable in one 16:9 row and preserving existing demo routes.
+- Keep a clearly named `/scoreboard/demo-tech-total-extremes-grouped` variant whose `tech-total-extremes-grouped` component marker combines "总成绩", "去掉最高分", and "去掉最低分" into one continuous result module while preserving the existing tech and backup routes.
+- On `/scoreboard/demo-tech`, the labels "总成绩", "去掉最高分", and "去掉最低分" must use projection-readable title sizing so viewers immediately understand each result module; keep their numeric values dominant and keep the backup route unchanged.
+- On `/scoreboard/demo-tech`, visibly label the composite result as "总成绩", enlarge judge labels and add more space before their scores, and show only the two removed-score results without the "综合评分计算 / 剔除分数" title block. Keep `/scoreboard/demo-tech-backup` unchanged.
+- Keep `/scoreboard/demo-tech-backup` as a frozen visual backup of `/scoreboard/demo-tech`; future visual experiments should not alter the backup route's independent `is-tech-backup` styles.
+- Preserve the existing robot-tech scoreboard demo as a comparison point and use a separate route for premium color explorations; the preferred premium palette is midnight navy, graphite blue, cool white, and one disciplined electric-cyan accent with projection-safe contrast.
+- The premium robot-tech scoreboard demo should remain visibly bright enough for projection: keep the blue/cyan background artwork legible, use medium navy glass panels instead of near-black panels, and reserve the brightest neutral surface for the composite score.
+- Scoreboard design explorations should use a separate demo route so the formal `/scoreboard` projection remains unchanged until a direction is approved.
+- The light-blue scoreboard demo should visibly show the team's draw-order number and group the removed highest and lowest scores into one centralized, large-type result module.
+- Keep both an image-background light-blue scoreboard demo and a separate image-free demo so the two presentation directions can be compared directly.
+- On the image-background light-blue scoreboard demo, use black for the team name and composite score value, and omit the visible "队伍总分" label from the score module.
+- Do not show previous/current/next controls on either scoreboard demo; use the keyboard left and right arrow keys to change demo teams.
+- Keep a third scoreboard demo that uses the supplied robot-arm, circuit, and digital-globe image as its background; adapt the panels and typography to high-contrast white/cyan on dark navy so content stays readable over the busy image.
 - The active scoring rubric follows the 院校赛道决赛评分表: 商品数字化营销实践 25, AI 技术应用能力 30, 应用成效与优化思路 20, 路演展示表现 15, 实践报告质量 10, for a total of 100.
 - Do not show the scoring-dimension quick navigation bar.
 - In each score editor, show only the awarded score. The item maximum is already displayed beside the item title, so do not repeat it inside the input.
@@ -66,7 +80,7 @@ Prototype feedback:
 - Avoid cheap animated grid/track effects on the score display background; keep background motionless, restrained, and high-end.
 - The single-team score display should show the selected team's composite score, anonymous submitted judge total scores, and enlarged highest/lowest removed scores.
 - The score display page should not show the top brand/header copy.
-- The score display page should label submitted judge total score cards as 评委1, 评委2, etc. for readability; these labels are display-order labels, not judge identities.
+- The score display page should label submitted judge total score cards as 评委1, 评委2, etc. for readability. For the standard seven-judge panel, 评委1 through 评委7 must map to accounts `001` through `007` in ascending account order without exposing account IDs on screen.
 - The score display page should not show server connection status or timestamps.
 - Highest and lowest score callouts on the score display page should be visually larger and easier to read.
 - The score display page is intended for large-screen projection/control displays and must preserve a 16:9 stage ratio; use centered letterboxing/pillarboxing instead of stretching the composition on non-16:9 screens.
@@ -88,7 +102,7 @@ Prototype feedback:
 - On the score display page, the team selector should open on the selected team's group and list only that group by default; cross-group navigation must use an explicit group switcher rather than mixing every group into one continuous list.
 - On the score display page, place the team identity and composite score together in the upper-right area, and keep that block compact rather than oversized.
 - On the score display page, use the center stage to show every anonymous submitted judge score in the team's frozen roster snapshot; the standard panel has 7 judges, but invited judges may change that count.
-- On the score display page, reveal anonymous judge scores in a shuffled/staggered order rather than showing them as a sorted row.
+- On the score display page, keep anonymous judge score cards in ascending judge-account order. Preserve the staggered entrance timing, but do not shuffle the card order.
 - On the score display page, anonymous judge score cards should be large for projection viewing; current target is about 30% larger than the first centered-card version.
 - On the score display page, place the team identity block in the upper-left area and keep it large enough for projection viewing.
 - On the score display page, keep the upper-left team identity block wide enough to comfortably show long team names.
