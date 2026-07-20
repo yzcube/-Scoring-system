@@ -1778,6 +1778,26 @@
         "clientUpdatedAt": 1784105637670,
         "serverRevision": 3,
         "serverUpdatedAt": "2026-07-15T08:53:57.680Z"
+      },
+      "SH03": {
+        "scores": {
+          "content": 9,
+          "scenario": 8,
+          "quality": "",
+          "breadth": 2,
+          "depth": "",
+          "rationality": "",
+          "complete": 8,
+          "analysis": "",
+          "logic": "",
+          "materials": "",
+          "reportQuality": 5
+        },
+        "submitted": false,
+        "updatedAt": "2026-07-16T07:34:57.815Z",
+        "clientUpdatedAt": 1784187297807,
+        "serverRevision": 5,
+        "serverUpdatedAt": "2026-07-16T07:34:57.815Z"
       }
     },
     "002": {
@@ -4634,10 +4654,10 @@
     "forcedReason": ""
   },
   "displaySelection": {
-    "teamId": "SH01",
+    "teamId": "SH02",
     "publicationStatus": "final",
-    "displayRevision": 61,
-    "publishedAt": "2026-07-15T09:13:13.514Z",
-    "updatedAt": "2026-07-15T09:13:13.514Z"
+    "displayRevision": 76,
+    "publishedAt": "2026-07-17T08:02:37.850Z",
+    "updatedAt": "2026-07-17T08:02:37.850Z"
   }
 }

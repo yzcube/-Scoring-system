@@ -700,6 +700,12 @@ export function getEntry(state, judgeId, teamId) {
 export function getCompositeSummary(state, teamId) {
   const team = getTeamById(state, teamId);
   const roster = team ? getTeamRoster(state, team) : [];
+  const accountsById = new Map(getJudgeAccounts(state).map((account) => [account.id, account]));
+  const displayRoster = roster.toSorted((leftId, rightId) => {
+    const leftUsername = accountsById.get(leftId)?.username ?? leftId;
+    const rightUsername = accountsById.get(rightId)?.username ?? rightId;
+    return leftUsername.localeCompare(rightUsername, "en", { numeric: true, sensitivity: "base" }) || leftId.localeCompare(rightId);
+  });
   const submittedTotals = roster
     .map((judgeId) => {
       const entry = getEntry(state, judgeId, teamId);
@@ -709,7 +715,7 @@ export function getCompositeSummary(state, teamId) {
     })
     .filter(Boolean)
     .sort((left, right) => left.totalCents - right.totalCents || left.judgeId.localeCompare(right.judgeId));
-  const anonymousScores = roster.map((judgeId) => {
+  const anonymousScores = displayRoster.map((judgeId) => {
     const entry = getEntry(state, judgeId, teamId);
     return entry.submitted ? { submitted: true, score: formatCents(getEntryTotalCents(entry)) } : { submitted: false, score: "--" };
   });

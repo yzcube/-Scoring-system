@@ -19,8 +19,15 @@ import {
   getLiveScoreboardEntryRoute,
   getScoreboardRoute,
   normalizeAppPath,
+  SCOREBOARD_CLEAN_DEMO_PATH,
+  SCOREBOARD_DEMO_PATH,
+  SCOREBOARD_PREMIUM_DEMO_PATH,
   SCOREBOARD_RESULTS_PATH,
   SCOREBOARD_SLOGAN_PATH,
+  SCOREBOARD_TECH_BACKUP_DEMO_PATH,
+  SCOREBOARD_TECH_DEMO_PATH,
+  SCOREBOARD_TECH_NINE_JUDGES_DEMO_PATH,
+  SCOREBOARD_TECH_TOTAL_EXTREMES_GROUPED_DEMO_PATH,
 } from "./appRoute.js";
 import { mergeConfiguredTeamOrder, reconcileConfiguredTeamOrder } from "./teamOrderScope.js";
 import {
@@ -136,21 +143,6 @@ function isNewerDraft(localEntry, serverEntry) {
   return localRevision > serverRevision || (localRevision === serverRevision && Number(localEntry?.clientUpdatedAt ?? 0) > Number(serverEntry?.clientUpdatedAt ?? 0));
 }
 
-function getStableShuffleRank(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function shuffledScores(scores, teamId) {
-  return (scores ?? [])
-    .map((score, index) => ({ ...score, sourceIndex: index, rank: getStableShuffleRank(`${teamId}:${index}`) }))
-    .sort((left, right) => left.rank - right.rank);
-}
-
 function getTeamMetaLine(team, fallback = "未填写项目名称") {
   return [team.registrationNumber || "未填写报名编号", team.projectName || fallback].filter(Boolean).join(" · ");
 }
@@ -259,6 +251,11 @@ function replaceScoreboardRoute(pathname, { live = false } = {}) {
   window.location.replace(nextLocation);
 }
 
+function formatScoreboardDrawOrder(orderLabel) {
+  const value = Number.parseInt(String(orderLabel ?? "").split("/")[0], 10);
+  return Number.isFinite(value) && value > 0 ? String(value).padStart(2, "0") : "--";
+}
+
 function ScoreboardSloganStage() {
   return (
     <main className="scoreboard-page single-scoreboard-page">
@@ -269,17 +266,23 @@ function ScoreboardSloganStage() {
   );
 }
 
-function ScoreboardUnscoredStage({ team, topbar }) {
+function ScoreboardUnscoredStage({ team, topbar, orderLabel }) {
   return (
     <main className="scoreboard-page single-scoreboard-page">
-      <section className="single-scoreboard-shell scoreboard-empty-stage" aria-label={`${team.teamName} 等待评分`}>
+      <section className={`single-scoreboard-shell scoreboard-empty-stage${topbar ? " has-controller" : ""}`} aria-label={`${team.teamName} 等待评分`}>
         {topbar}
         <div className="scoreboard-empty-copy" role="status">
-          <span className="scoreboard-empty-label">队伍名称 /</span>
-          <ScoreboardTeamName name={team.teamName} />
-          {team.registrationNumber ? <span className="scoreboard-empty-number">队伍编号：{team.registrationNumber}</span> : null}
-          {team.projectName ? <span>{team.projectName}</span> : null}
-          <span className="scoreboard-empty-status">等待评委评分</span>
+          <div className="scoreboard-empty-draw-order">
+            <span>抽签顺序</span>
+            <strong>{formatScoreboardDrawOrder(orderLabel)}</strong>
+          </div>
+          <div className="scoreboard-empty-team-panel">
+            <span className="scoreboard-empty-label">队伍名称 /</span>
+            <ScoreboardTeamName name={team.teamName} />
+            {team.registrationNumber ? <span className="scoreboard-empty-number">队伍编号：{team.registrationNumber}</span> : null}
+            {team.projectName ? <span>{team.projectName}</span> : null}
+            <span className="scoreboard-empty-status">等待评委评分</span>
+          </div>
         </div>
       </section>
     </main>
@@ -529,34 +532,40 @@ function ScoreboardPage() {
     </div>
   ) : null;
   if (!team || !summary) return <ScoreboardSloganStage />;
-  if (summary.submittedCount === 0) return <ScoreboardUnscoredStage team={team} topbar={topbar} />;
-  const scores = shuffledScores(summary.anonymousScores, team.id);
+  if (summary.submittedCount === 0) return <ScoreboardUnscoredStage team={team} topbar={topbar} orderLabel={selectedTeam?.orderLabel} />;
+  const scores = summary.anonymousScores ?? [];
   const judgeLayout = getScoreboardJudgeLayout(scores.length);
   const teamNameText = String(team.teamName ?? "");
   const isLongTeamName = teamNameText.length >= 12;
   return (
     <main className="scoreboard-page single-scoreboard-page">
-      <section className={`single-scoreboard-shell${isLongTeamName ? " is-long-name" : ""}`} aria-label={`${team.teamName} 成绩展示`}>
+      <section className={`single-scoreboard-shell${isLongTeamName ? " is-long-name" : ""}${topbar ? " has-controller" : ""}`} aria-label={`${team.teamName} 成绩展示`}>
         {topbar}
         <div className="single-scoreboard-main">
           <section className="single-scoreboard-judge-stage" aria-label="匿名评委评分">
             <div className={`single-scoreboard-judges is-${judgeLayout.density}`} data-judge-count={judgeLayout.count} style={{ "--judge-columns": judgeLayout.columns }}>
               {scores.map((item, index) => (
-                <div className={item.submitted ? "single-score-card is-submitted" : "single-score-card is-pending"} key={`${team.id}-${item.sourceIndex}`} style={{ "--score-delay": `${index * 90}ms` }}>
+                <div className={item.submitted ? "single-score-card is-submitted" : "single-score-card is-pending"} key={`${team.id}-${index}`} style={{ "--score-delay": `${index * 90}ms` }}>
                   <span>评委{index + 1}</span>
                   <strong>{item.score}</strong>
                 </div>
               ))}
             </div>
           </section>
-        <section className="single-scoreboard-copy single-scoreboard-identity">
-            <span className="single-scoreboard-identity-label">队伍名称 /</span>
-            <ScoreboardTeamName name={team.teamName} />
-            {team.registrationNumber ? <p className="single-scoreboard-team-number">队伍编号：{team.registrationNumber}</p> : null}
-            {team.projectName ? <p className="single-scoreboard-product">{team.projectName}</p> : null}
+          <section className="single-scoreboard-copy single-scoreboard-identity">
+            <div className="single-scoreboard-draw-order">
+              <span>抽签顺序</span>
+              <strong>{formatScoreboardDrawOrder(selectedTeam?.orderLabel)}</strong>
+            </div>
+            <div className="single-scoreboard-identity-panel">
+              <span className="single-scoreboard-identity-label">队伍名称 /</span>
+              <ScoreboardTeamName name={team.teamName} />
+              {team.registrationNumber ? <p className="single-scoreboard-team-number">队伍编号：{team.registrationNumber}</p> : null}
+              {team.projectName ? <p className="single-scoreboard-product">{team.projectName}</p> : null}
+            </div>
           </section>
-          <aside className="single-scoreboard-context" aria-label="队伍总分">
-            <span className="single-scoreboard-total-label">队伍总分</span>
+          <aside className="single-scoreboard-context" aria-label="总成绩">
+            <span className="single-scoreboard-total-label">总成绩</span>
             <div className="single-scoreboard-score-value"><strong>{summary.display}</strong></div>
           </aside>
           <div className="single-scoreboard-extremes">
@@ -564,6 +573,141 @@ function ScoreboardPage() {
             <div className="single-scoreboard-extreme is-low"><span>去掉最低分</span><strong>{summary.low?.score ?? "--"}</strong></div>
           </div>
         </div>
+      </section>
+    </main>
+  );
+}
+
+const scoreboardDemoTeams = [
+  {
+    drawOrder: "01",
+    registrationNumber: "ST-0022",
+    teamName: "跨境电商综合试验区全链路AI赋能公共服务平台建设项目团队",
+    projectName: "跨境电商综合试验区全链路AI赋能公共服务平台建设项目",
+    total: "88.47",
+    scores: ["89.00", "87.08", "88.00", "89.48", "87.55", "88.51", "89.28"],
+    additionalScores: ["88.47", "88.47"],
+    high: "89.48",
+    low: "87.08",
+  },
+  {
+    drawOrder: "02",
+    registrationNumber: "ST-0017",
+    teamName: "数智融通东盟跨境电商创新团队",
+    projectName: "AI驱动的跨境供应链协同服务平台",
+    total: "87.96",
+    scores: ["88.20", "86.75", "87.90", "89.10", "87.32", "88.63", "87.75"],
+    additionalScores: ["87.96", "87.96"],
+    high: "89.10",
+    low: "86.75",
+  },
+  {
+    drawOrder: "03",
+    registrationNumber: "ST-0009",
+    teamName: "Flyelep飞象全球电商内容智能体",
+    projectName: "面向东盟市场的多语种商品内容智能生成平台",
+    total: "90.12",
+    scores: ["90.20", "89.65", "91.10", "89.88", "90.36", "90.51", "89.76"],
+    additionalScores: ["90.06", "90.07"],
+    high: "91.10",
+    low: "89.65",
+  },
+];
+
+function ScoreboardDemoPage({ variant = "light" }) {
+  const [activeTeamIndex, setActiveTeamIndex] = useState(0);
+  const team = scoreboardDemoTeams[activeTeamIndex];
+  const isTechNineJudges = variant === "tech-nine-judges";
+  const isTechTotalExtremesGrouped = variant === "tech-total-extremes-grouped";
+  const demoScores = isTechNineJudges ? [...team.scores, ...team.additionalScores] : team.scores;
+  const variantClass = variant === "clean"
+    ? " is-clean"
+    : variant === "tech"
+      ? " is-tech"
+      : variant === "tech-backup"
+        ? " is-tech-backup"
+        : isTechNineJudges
+          ? " is-tech is-tech-nine-judges"
+          : isTechTotalExtremesGrouped
+            ? " is-tech is-tech-grouped"
+            : variant === "premium"
+              ? " is-premium"
+              : "";
+  const variantLabel = variant === "clean"
+    ? "无背景图片"
+    : variant === "tech"
+      ? "机器人科技背景"
+      : variant === "tech-backup"
+        ? "机器人科技背景备份"
+        : isTechNineJudges
+          ? "九评委机器人科技背景"
+          : isTechTotalExtremesGrouped
+            ? "总成绩与剔除分数组合展示"
+            : variant === "premium"
+              ? "深空科技配色"
+              : "淡蓝主题";
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof Element && (event.target.matches("input, select, textarea, button") || event.target.isContentEditable)) return;
+      event.preventDefault();
+      setActiveTeamIndex((index) => Math.max(0, Math.min(scoreboardDemoTeams.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))));
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  return (
+    <main className={`scoreboard-demo-page${variantClass}`}>
+      <section className={`scoreboard-demo-stage${variantClass}`} aria-label={`${team.teamName} ${variantLabel}成绩展示 demo`}>
+        <section className="scoreboard-demo-identity" aria-label="队伍信息">
+          <div className="scoreboard-demo-draw-order">
+            <span>抽签顺序</span>
+            <strong>{team.drawOrder}</strong>
+          </div>
+          <div className="scoreboard-demo-team-copy">
+            <span className="scoreboard-demo-eyebrow">队伍名称 /</span>
+            <ScoreboardTeamName name={team.teamName} />
+            <p className="scoreboard-demo-team-number">队伍编号：{team.registrationNumber}</p>
+            <p>{team.projectName}</p>
+          </div>
+        </section>
+
+        {isTechTotalExtremesGrouped ? null : (
+          <aside className="scoreboard-demo-total" aria-label="队伍总分">
+            {(variant === "tech" || isTechNineJudges) ? <span>总成绩</span> : null}
+            <strong>{team.total}</strong>
+          </aside>
+        )}
+
+        <section className="scoreboard-demo-judges" aria-label="匿名评委评分">
+          {demoScores.map((score, index) => (
+            <div key={`${team.drawOrder}-${index}`} style={{ "--score-delay": `${index * 70}ms` }}>
+              <span>评委{index + 1}</span>
+              <strong>{score}</strong>
+            </div>
+          ))}
+        </section>
+
+        {isTechTotalExtremesGrouped ? (
+          <section className="scoreboard-demo-summary-grouped" aria-label="总成绩与剔除分数">
+            <div className="is-total"><span>总成绩</span><strong>{team.total}</strong></div>
+            <div className="is-high"><span>去掉最高分</span><strong>{team.high}</strong></div>
+            <div className="is-low"><span>去掉最低分</span><strong>{team.low}</strong></div>
+          </section>
+        ) : (
+          <section className="scoreboard-demo-extremes" aria-label="剔除分数">
+            {(variant === "tech" || isTechNineJudges) ? null : (
+              <div className="scoreboard-demo-extremes-title">
+                <span>综合评分计算</span>
+                <strong>剔除分数</strong>
+              </div>
+            )}
+            <div className="is-high"><span>去掉最高分</span><strong>{team.high}</strong></div>
+            <div className="is-low"><span>去掉最低分</span><strong>{team.low}</strong></div>
+          </section>
+        )}
       </section>
     </main>
   );
@@ -2315,6 +2459,13 @@ export function App() {
   const appPath = normalizeAppPath(window.location.pathname);
   const isScoreboardPage = appPath === SCOREBOARD_RESULTS_PATH;
   const isScoreboardSloganPage = appPath === SCOREBOARD_SLOGAN_PATH;
+  const isScoreboardDemoPage = appPath === SCOREBOARD_DEMO_PATH;
+  const isScoreboardCleanDemoPage = appPath === SCOREBOARD_CLEAN_DEMO_PATH;
+  const isScoreboardTechDemoPage = appPath === SCOREBOARD_TECH_DEMO_PATH;
+  const isScoreboardTechBackupDemoPage = appPath === SCOREBOARD_TECH_BACKUP_DEMO_PATH;
+  const isScoreboardTechNineJudgesDemoPage = appPath === SCOREBOARD_TECH_NINE_JUDGES_DEMO_PATH;
+  const isScoreboardTechTotalExtremesGroupedDemoPage = appPath === SCOREBOARD_TECH_TOTAL_EXTREMES_GROUPED_DEMO_PATH;
+  const isScoreboardPremiumDemoPage = appPath === SCOREBOARD_PREMIUM_DEMO_PATH;
   const isRankingsPage = appPath === "/rankings";
 
   useEffect(() => { accountRef.current = account; }, [account]);
@@ -2737,7 +2888,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (isScoreboardPage || isScoreboardSloganPage || isRankingsPage || !authToken || account) return undefined;
+    if (isScoreboardPage || isScoreboardSloganPage || isScoreboardDemoPage || isScoreboardCleanDemoPage || isScoreboardTechDemoPage || isScoreboardTechBackupDemoPage || isScoreboardTechNineJudgesDemoPage || isScoreboardTechTotalExtremesGroupedDemoPage || isScoreboardPremiumDemoPage || isRankingsPage || !authToken || account) return undefined;
     const controller = new AbortController();
     sessionRestoreAbortRef.current = controller;
     const restoreEpoch = sessionEpochRef.current;
@@ -2768,17 +2919,24 @@ export function App() {
       controller.abort();
       if (sessionRestoreAbortRef.current === controller) sessionRestoreAbortRef.current = null;
     };
-  }, [account, authToken, isScoreboardPage, isScoreboardSloganPage, isRankingsPage, restoreAttempt]);
+  }, [account, authToken, isScoreboardPage, isScoreboardSloganPage, isScoreboardDemoPage, isScoreboardCleanDemoPage, isScoreboardTechDemoPage, isScoreboardTechBackupDemoPage, isScoreboardTechNineJudgesDemoPage, isScoreboardTechTotalExtremesGroupedDemoPage, isScoreboardPremiumDemoPage, isRankingsPage, restoreAttempt]);
 
   useEffect(() => {
-    if (!account || isScoreboardPage || isScoreboardSloganPage || isRankingsPage) return undefined;
+    if (!account || isScoreboardPage || isScoreboardSloganPage || isScoreboardDemoPage || isScoreboardCleanDemoPage || isScoreboardTechDemoPage || isScoreboardTechBackupDemoPage || isScoreboardTechNineJudgesDemoPage || isScoreboardTechTotalExtremesGroupedDemoPage || isScoreboardPremiumDemoPage || isRankingsPage) return undefined;
     refresh({ showError: account.role === "admin" });
     const timer = window.setInterval(() => refresh(), 2000);
     return () => window.clearInterval(timer);
-  }, [account?.id, account?.role, isScoreboardPage, isScoreboardSloganPage, isRankingsPage]);
+  }, [account?.id, account?.role, isScoreboardPage, isScoreboardSloganPage, isScoreboardDemoPage, isScoreboardCleanDemoPage, isScoreboardTechDemoPage, isScoreboardTechBackupDemoPage, isScoreboardTechNineJudgesDemoPage, isScoreboardTechTotalExtremesGroupedDemoPage, isScoreboardPremiumDemoPage, isRankingsPage]);
 
   if (isScoreboardPage) return <ScoreboardPage />;
   if (isScoreboardSloganPage) return <ScoreboardSloganPage />;
+  if (isScoreboardDemoPage) return <ScoreboardDemoPage />;
+  if (isScoreboardCleanDemoPage) return <ScoreboardDemoPage variant="clean" />;
+  if (isScoreboardTechDemoPage) return <ScoreboardDemoPage variant="tech" />;
+  if (isScoreboardTechBackupDemoPage) return <ScoreboardDemoPage variant="tech-backup" />;
+  if (isScoreboardTechNineJudgesDemoPage) return <ScoreboardDemoPage variant="tech-nine-judges" />;
+  if (isScoreboardTechTotalExtremesGroupedDemoPage) return <ScoreboardDemoPage variant="tech-total-extremes-grouped" />;
+  if (isScoreboardPremiumDemoPage) return <ScoreboardDemoPage variant="premium" />;
   if (isRankingsPage) return <RankingsPage />;
   if (!account) {
     return <main className="login-shell"><section className="login-panel" aria-label="评分系统登录"><div className="login-copy"><span className="login-kicker">决赛评分表</span><h1>现场评分终端</h1><p>评委与管理员从同一入口登录，现场平板统一提交到共享评分服务器。</p></div><form className="login-form" onSubmit={submitLogin}><div className="login-form-head"><span>{isRestoringSession ? "恢复登录" : "账号验证"}</span><strong>{isRestoringSession ? "正在恢复当前标签页会话" : "请输入账号密码"}</strong></div><label>账号<input name="username" autoComplete="username" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="输入账号" /></label><label>密码<input type="password" name="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="输入密码" /></label>{(sessionRestoreError || loginError) ? <div className="login-error" role="alert">{sessionRestoreError || loginError}</div> : null}<div className="login-form-actions">{authToken && sessionRestoreError ? <button className="ghost-action" type="button" onClick={() => setRestoreAttempt((current) => current + 1)}>重试恢复登录</button> : null}<button className="primary-action login-submit" disabled={isLoggingIn} type="submit">{isLoggingIn ? "登录中" : "登录"}</button></div></form></section></main>;

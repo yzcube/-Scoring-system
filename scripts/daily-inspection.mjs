@@ -174,6 +174,11 @@ async function main() {
           scoreboardSource.includes("orderLabel"),
         "scoreboard does not expose appearance-order team selection",
       );
+      assert(
+        scoreboardSource.includes("summary.anonymousScores ?? []") &&
+          !appSource.includes("shuffledScores"),
+        "scoreboard judge cards must preserve the server-provided account order",
+      );
     },
   );
 
