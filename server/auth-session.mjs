@@ -1,7 +1,10 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCallback);
+const persistentSessionExpiresAt = Number.MAX_SAFE_INTEGER;
 
 export function createPasswordService({ cost, r = 8, p, maxmem, concurrency }) {
   const verificationSalt = randomBytes(16).toString("base64url");
@@ -79,15 +82,18 @@ export function createSessionService({
   readState,
   getAccountById,
   HttpError,
-  sessionTtlMs,
+  fileSessionPath = "",
   setAuditActor,
   clampInteger,
 }) {
-  const sessionsByToken = new Map();
+  const sessionsByTokenHash = new Map();
   const loginFailuresByUsername = new Map();
   const loginWindowMs = 10 * 60 * 1000;
   const loginAttemptLimit = 5;
   const loginLockMs = 10 * 60 * 1000;
+  let fileSessionsLoaded = storageMode !== "file";
+  let fileSessionLoadPromise = null;
+  let fileSessionWriteQueue = Promise.resolve();
 
   function getBearerToken(request) {
     const distinctValues = request.headersDistinct?.authorization;
@@ -102,25 +108,89 @@ export function createSessionService({
     return createHash("sha256").update(token).digest();
   }
 
-  function cleanupExpiredSessions() {
-    if (storageMode === "mysql") return;
-    const now = Date.now();
-    sessionsByToken.forEach((session, token) => {
-      if (session.expiresAt <= now) sessionsByToken.delete(token);
-    });
+  function getSessionTokenKey(token) {
+    return getSessionTokenHash(token).toString("base64url");
+  }
+
+  function sanitizePersistedFileSession(rawSession) {
+    const tokenHash = typeof rawSession?.tokenHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(rawSession.tokenHash)
+      ? rawSession.tokenHash
+      : "";
+    const accountId = typeof rawSession?.accountId === "string" ? rawSession.accountId.slice(0, 80) : "";
+    const sessionId = typeof rawSession?.sessionId === "string" && /^[a-f0-9]{32}$/.test(rawSession.sessionId)
+      ? rawSession.sessionId
+      : "";
+    const authVersion = clampInteger(rawSession?.authVersion);
+    if (!tokenHash || !accountId || !sessionId) return null;
+    return {
+      tokenHash,
+      accountId,
+      authVersion,
+      sessionId,
+      deviceId: typeof rawSession?.deviceId === "string" ? rawSession.deviceId.slice(0, 80) : "",
+      expiresAt: null,
+    };
+  }
+
+  async function ensureFileSessionsLoaded() {
+    if (fileSessionsLoaded || storageMode !== "file") return;
+    if (!fileSessionLoadPromise) {
+      fileSessionLoadPromise = (async () => {
+        if (!fileSessionPath) {
+          fileSessionsLoaded = true;
+          return;
+        }
+        try {
+          const parsed = JSON.parse(await readFile(fileSessionPath, "utf8"));
+          const sessions = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+          sessions.forEach((rawSession) => {
+            const session = sanitizePersistedFileSession(rawSession);
+            if (!session) return;
+            sessionsByTokenHash.set(session.tokenHash, session);
+          });
+        } catch (error) {
+          if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+        }
+        fileSessionsLoaded = true;
+      })();
+    }
+    await fileSessionLoadPromise;
+  }
+
+  async function persistFileSessions() {
+    if (storageMode !== "file" || !fileSessionPath) return;
+    const snapshot = JSON.stringify({
+      version: 1,
+      sessions: [...sessionsByTokenHash.entries()].map(([tokenHash, session]) => ({
+        tokenHash,
+        accountId: session.accountId,
+        authVersion: session.authVersion,
+        sessionId: session.sessionId,
+        deviceId: session.deviceId,
+      })),
+    }, null, 2);
+    fileSessionWriteQueue = fileSessionWriteQueue
+      .catch(() => {})
+      .then(async () => {
+        await mkdir(dirname(fileSessionPath), { recursive: true });
+        const temporaryPath = `${fileSessionPath}.${process.pid}.tmp`;
+        await writeFile(temporaryPath, `${snapshot}\n`, { encoding: "utf8", mode: 0o600 });
+        await rename(temporaryPath, fileSessionPath);
+        await chmod(fileSessionPath, 0o600);
+      });
+    await fileSessionWriteQueue;
   }
 
   async function createSession(account, deviceId) {
-    cleanupExpiredSessions();
+    await ensureFileSessionsLoaded();
     const token = randomBytes(32).toString("base64url");
     const sessionId = randomBytes(16).toString("hex");
-    const expiresAt = Date.now() + sessionTtlMs;
     const session = {
       accountId: account.id,
       authVersion: account.authVersion,
       sessionId,
       deviceId: typeof deviceId === "string" ? deviceId.slice(0, 80) : "",
-      expiresAt,
+      expiresAt: null,
     };
     if (storageMode === "mysql") {
       await getMysqlPool().query(
@@ -128,16 +198,17 @@ export function createSessionService({
           INSERT INTO ${mysqlId(mysqlSessionsTable)} (session_id, account_id, token_hash, auth_version, expires_at, device_id)
           VALUES (?, ?, ?, ?, ?, ?)
         `,
-        [session.sessionId, session.accountId, getSessionTokenHash(token), session.authVersion, session.expiresAt, session.deviceId],
+        [session.sessionId, session.accountId, getSessionTokenHash(token), session.authVersion, persistentSessionExpiresAt, session.deviceId],
       );
     } else {
-      sessionsByToken.set(token, session);
+      sessionsByTokenHash.set(getSessionTokenKey(token), session);
+      await persistFileSessions();
     }
-    return { token, sessionId, expiresAt };
+    return { token, sessionId, expiresAt: null };
   }
 
   async function getSession(request) {
-    cleanupExpiredSessions();
+    await ensureFileSessionsLoaded();
     const token = getBearerToken(request);
     if (!token) return null;
     if (storageMode === "mysql") {
@@ -145,10 +216,10 @@ export function createSessionService({
         `
           SELECT session_id, account_id, auth_version, expires_at, device_id
           FROM ${mysqlId(mysqlSessionsTable)}
-          WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+          WHERE token_hash = ? AND revoked_at IS NULL
           LIMIT 1
         `,
-        [getSessionTokenHash(token), Date.now()],
+        [getSessionTokenHash(token)],
       );
       const session = rows[0];
       if (!session) return null;
@@ -157,11 +228,11 @@ export function createSessionService({
         authVersion: clampInteger(session.auth_version),
         sessionId: session.session_id,
         deviceId: session.device_id,
-        expiresAt: Number(session.expires_at),
+        expiresAt: null,
         token,
       };
     }
-    const session = sessionsByToken.get(token);
+    const session = sessionsByTokenHash.get(getSessionTokenKey(token));
     return session ? { ...session, token } : null;
   }
 
@@ -174,7 +245,9 @@ export function createSessionService({
       );
       return;
     }
-    sessionsByToken.delete(session.token);
+    await ensureFileSessionsLoaded();
+    sessionsByTokenHash.delete(getSessionTokenKey(session.token));
+    await persistFileSessions();
   }
 
   async function assertQueuedSession(state, session, allowedRoles) {
@@ -184,17 +257,17 @@ export function createSessionService({
         `
           SELECT auth_version
           FROM ${mysqlId(mysqlSessionsTable)}
-          WHERE session_id = ? AND revoked_at IS NULL AND expires_at > ?
+          WHERE session_id = ? AND revoked_at IS NULL
           LIMIT 1
         `,
-        [session.sessionId, Date.now()],
+        [session.sessionId],
       );
       if (!rows[0] || clampInteger(rows[0].auth_version) !== session.authVersion) {
         throw new HttpError(401, "登录已失效，请重新登录");
       }
     } else {
-      cleanupExpiredSessions();
-      const current = sessionsByToken.get(session.token);
+      await ensureFileSessionsLoaded();
+      const current = sessionsByTokenHash.get(getSessionTokenKey(session.token));
       if (!current || current.sessionId !== session.sessionId || current.authVersion !== session.authVersion) {
         throw new HttpError(401, "登录已失效，请重新登录");
       }
@@ -258,8 +331,7 @@ export function createSessionService({
   }
 
   function getActiveSessionCount() {
-    cleanupExpiredSessions();
-    return storageMode === "mysql" ? 0 : sessionsByToken.size;
+    return storageMode === "mysql" ? 0 : sessionsByTokenHash.size;
   }
 
   return {

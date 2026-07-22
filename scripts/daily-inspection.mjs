@@ -174,6 +174,11 @@ async function main() {
           scoreboardSource.includes("orderLabel"),
         "scoreboard does not expose appearance-order team selection",
       );
+      assert(
+        scoreboardSource.includes("summary.anonymousScores ?? []") &&
+          !appSource.includes("shuffledScores"),
+        "scoreboard judge cards must preserve the server-provided account order",
+      );
     },
   );
 
@@ -266,18 +271,7 @@ async function main() {
     ),
   );
   await check("shared scoring and competition-control contracts", async () =>
-    run(process.execPath, [
-      "--test",
-      "test/scoringRules.test.mjs",
-      "test/appScoringImport.test.mjs",
-      "test/contestControl.test.mjs",
-      "test/stateStore.test.mjs",
-      "test/httpRoutes.test.mjs",
-      "test/sessionApiRoutes.test.mjs",
-      "test/contestStorage.test.mjs",
-      "test/mysqlTransaction.test.mjs",
-      "test/sessionWorkGeneration.test.mjs",
-    ]),
+    run(process.execPath, ["--test"]),
   );
   await check("state transfer tools parse", async () =>
     run(process.execPath, [

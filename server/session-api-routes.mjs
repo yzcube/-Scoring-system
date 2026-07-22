@@ -1,7 +1,7 @@
-export function createSessionApiRoutes({ runtime, storage, http, auth, state, presentation }) {
+export function createSessionApiRoutes({ runtime, storage, http, auth, state, presentation, resultExport, input }) {
   const { storageMode, isShuttingDown, getLanUrls } = runtime;
   const { checkStorageHealth } = storage;
-  const { readJsonBody, sendJson, HttpError } = http;
+  const { readJsonBody, sendJson, sendBinary, HttpError } = http;
   const {
     normalizeUsername,
     assertLoginNotLimited,
@@ -16,7 +16,18 @@ export function createSessionApiRoutes({ runtime, storage, http, auth, state, pr
     getSession,
   } = auth;
   const { readState, getAccountById, queueSessionRevocation } = state;
-  const { getScoreboardPayload, getRankingsPayload, getAdminStatePayload, getJudgeStatePayload } = presentation;
+  const { getProjectionPayload, getScoreboardPayload, getRankingsPayload, getAdminStatePayload, getJudgeStatePayload } = presentation;
+  const { getFinalResultExportData, buildFinalResultWorkbook, buildResultExportFilename, spreadsheetContentType } = resultExport;
+  const { isKnownGroupId } = input;
+
+  function isLiveProjectionRequest(request) {
+    try {
+      const referer = new URL(String(request.headers.referer || ""));
+      return referer.searchParams.get("live") === "1";
+    } catch {
+      return false;
+    }
+  }
 
   return async function handleSessionApi(request, response, url) {
     if (request.method === "GET" && url.pathname === "/api/health") {
@@ -111,13 +122,50 @@ export function createSessionApiRoutes({ runtime, storage, http, auth, state, pr
       return true;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/projection") {
+      request.audit.action = "projection_read";
+      const projectionState = await readState();
+      request.audit.outcome = "ok";
+      sendJson(response, 200, {
+        ok: true,
+        serverTime: new Date().toISOString(),
+        ...getProjectionPayload(projectionState),
+      });
+      return true;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/scoreboard") {
       request.audit.action = "scoreboard_read";
-      const controller = url.searchParams.get("control") === "1";
-      const state = controller
-        ? (await requireSession(request, ["admin"])).state
-        : await readState();
+      const controllerRequested = url.searchParams.get("control") === "1";
+      const controller = controllerRequested && !isLiveProjectionRequest(request);
+      let state;
+      if (controller) {
+        try {
+          state = (await requireSession(request, ["admin"])).state;
+        } catch (error) {
+          if (![401, 403].includes(error?.status)) throw error;
+          const projectionState = await readState();
+          request.audit.actor = null;
+          request.audit.outcome = "public_fallback";
+          sendJson(response, 200, {
+            ok: true,
+            serverTime: new Date().toISOString(),
+            ...getProjectionPayload(projectionState),
+          });
+          return true;
+        }
+      } else {
+        state = await readState();
+      }
       request.audit.outcome = "ok";
+      if (!controller) {
+        sendJson(response, 200, {
+          ok: true,
+          serverTime: new Date().toISOString(),
+          ...getProjectionPayload(state),
+        });
+        return true;
+      }
       const payload = getScoreboardPayload(
         state,
         controller ? url.searchParams.get("teamId") : "",
@@ -130,19 +178,67 @@ export function createSessionApiRoutes({ runtime, storage, http, auth, state, pr
         ...payload,
         displaySelection: publicSelectionVisible
           ? payload.displaySelection
-          : { teamId: null, publicationStatus: "idle", displayRevision: 0, publishedAt: "", updatedAt: "" },
+          : { teamId: null, publicationStatus: "idle", projectionView: "slogan", rankingGroupId: "gaozhi", displayRevision: 0, publishedAt: "", updatedAt: "", rankingAnimationEnabled: false, rankingTransition: null },
         selectedTeam: publicSelectionVisible ? payload.selectedTeam : null,
         selectedTeamId: publicSelectionVisible ? payload.selectedTeamId : null,
         teamOptions: controller ? payload.teamOptions : [],
+        rankingSnapshot: controller ? payload.rankingSnapshot : [],
+        rankingTransition: publicSelectionVisible ? payload.rankingTransition : null,
       });
       return true;
     }
 
     if (request.method === "GET" && url.pathname === "/api/rankings") {
       request.audit.action = "rankings_read";
+      const requestedGroupId = String(url.searchParams.get("groupId") ?? "").trim();
+      let rankingState;
+      let rankingGroupId = requestedGroupId;
+      try {
+        rankingState = (await requireSession(request, ["admin"])).state;
+        request.audit.outcome = "authenticated";
+      } catch (error) {
+        if (![401, 403].includes(error?.status)) throw error;
+        rankingState = await readState();
+        const publishedGroupId = rankingState.displaySelection?.projectionView === "rankings"
+          ? String(rankingState.displaySelection.rankingGroupId ?? "")
+          : "";
+        const requestedPublishedGroup = rankingGroupId || publishedGroupId;
+        if (!isKnownGroupId(publishedGroupId) || requestedPublishedGroup !== publishedGroupId) {
+          request.audit.actor = null;
+          request.audit.outcome = "not_published";
+          throw new HttpError(403, "当前排名未发布到大屏");
+        }
+        rankingGroupId = publishedGroupId;
+        request.audit.actor = null;
+        request.audit.outcome = "public_projection";
+      }
+      sendJson(response, 200, {
+        ok: true,
+        serverTime: new Date().toISOString(),
+        ...getRankingsPayload(rankingState, rankingGroupId),
+      });
+      return true;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/admin/results.xlsx") {
+      request.audit.action = "results_export";
       const session = await requireSession(request, ["admin"]);
-      request.audit.outcome = "ok";
-      sendJson(response, 200, { ok: true, serverTime: new Date().toISOString(), ...getRankingsPayload(session.state, url.searchParams.get("groupId")) });
+      const groupId = String(url.searchParams.get("groupId") ?? "").trim();
+      if (!isKnownGroupId(groupId)) throw new HttpError(400, "请选择有效的导出组别");
+      const exportData = getFinalResultExportData(session.state, groupId);
+      if (!exportData.rows.length) throw new HttpError(409, "该组暂无最终成绩可导出");
+      const createdAt = new Date();
+      const workbook = buildFinalResultWorkbook(exportData, { createdAt });
+      const filename = buildResultExportFilename(exportData.groupLabel, createdAt);
+      request.audit.target = { groupId };
+      request.audit.details = {
+        groupLabel: exportData.groupLabel,
+        exportedTeamCount: exportData.rows.length,
+        judgeColumnCount: exportData.judgeColumnCount,
+        finalOnly: true,
+      };
+      request.audit.outcome = "downloaded";
+      sendBinary(response, 200, workbook, { contentType: spreadsheetContentType, filename });
       return true;
     }
 

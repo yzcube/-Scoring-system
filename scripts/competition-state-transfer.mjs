@@ -238,16 +238,70 @@ function normalizeActiveAssignment(rawAssignment, teams, knownJudgeIds) {
 
 function normalizeDisplaySelection(rawSelection, teams) {
   const teamIds = new Set(teams.map((team) => team.id));
+  const teamById = new Map(teams.map((team) => [team.id, team]));
   const teamId = normalizeId(rawSelection?.teamId, 16);
-  const publicationStatus = ["temporary", "final", "review_required"].includes(rawSelection?.publicationStatus) && teamIds.has(teamId)
+  const publicationStatus = ["waiting", "temporary", "final", "review_required"].includes(rawSelection?.publicationStatus) &&
+    teamIds.has(teamId) &&
+    teamById.get(teamId)?.status === "active"
     ? rawSelection.publicationStatus
     : "idle";
+  const revealedTeamIdsByGroup = Object.fromEntries(
+    contestGroups.map((group) => [
+      group.id,
+      Array.isArray(rawSelection?.revealedTeamIdsByGroup?.[group.id])
+        ? rawSelection.revealedTeamIdsByGroup[group.id]
+            .map((id) => normalizeId(id, 16))
+            .filter((id, index, values) => {
+              const revealedTeam = teamById.get(id);
+              return revealedTeam?.groupId === group.id &&
+                revealedTeam.status === "active" &&
+                !(publicationStatus === "review_required" && id === teamId) &&
+                values.indexOf(id) === index;
+            })
+        : [],
+    ]),
+  );
+  const rawTransition = rawSelection?.rankingTransition;
+  const transitionGroupId = sanitizeGroupId(rawTransition?.groupId);
+  const transitionFromTeamId = normalizeId(rawTransition?.fromTeamId, 16);
+  const transitionToTeamId = normalizeId(rawTransition?.toTeamId, 16);
+  const transitionRevision = clampInteger(rawTransition?.transitionRevision);
+  const transitionTeamIds = Array.isArray(rawTransition?.teamIds)
+    ? rawTransition.teamIds
+        .map((id) => normalizeId(id, 16))
+        .filter((id, index, values) => revealedTeamIdsByGroup[transitionGroupId].includes(id) && values.indexOf(id) === index)
+    : [];
+  const transitionStartedAt = typeof rawTransition?.startedAt === "string"
+    ? rawTransition.startedAt.slice(0, 64)
+    : "";
+  const rankingAnimationEnabled = rawSelection?.rankingAnimationEnabled === true;
+  const rankingTransition = rankingAnimationEnabled &&
+    publicationStatus !== "idle" &&
+    transitionToTeamId === teamId &&
+    teamById.get(transitionFromTeamId)?.groupId === transitionGroupId &&
+    transitionFromTeamId !== transitionToTeamId &&
+    transitionRevision === clampInteger(rawSelection?.displayRevision) &&
+    transitionTeamIds.includes(transitionFromTeamId) &&
+    Number.isFinite(Date.parse(transitionStartedAt))
+    ? {
+        transitionRevision,
+        groupId: transitionGroupId,
+        fromTeamId: transitionFromTeamId,
+        toTeamId: transitionToTeamId,
+        startedAt: transitionStartedAt,
+        durationMs: Math.min(120_000, Math.max(1750, clampInteger(rawTransition?.durationMs, 1750))),
+        teamIds: transitionTeamIds,
+      }
+    : null;
   return {
     teamId: publicationStatus === "idle" ? null : teamId,
     publicationStatus,
     displayRevision: clampInteger(rawSelection?.displayRevision),
     publishedAt: typeof rawSelection?.publishedAt === "string" ? rawSelection.publishedAt.slice(0, 64) : "",
     updatedAt: typeof rawSelection?.updatedAt === "string" ? rawSelection.updatedAt.slice(0, 64) : "",
+    rankingAnimationEnabled,
+    revealedTeamIdsByGroup,
+    rankingTransition,
   };
 }
 

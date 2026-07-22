@@ -1,4 +1,8 @@
-import { getOrderedSetupTeams } from "./competitionSetup.js";
+import {
+  getCompetitionHalfTeamIds,
+  getOrderedActiveHalfTeams,
+  getOrderedSetupTeams,
+} from "./competitionSetup.js";
 
 function getTeamLabel(team, index) {
   return `${index + 1}. ${team.teamName}`;
@@ -145,12 +149,28 @@ export function deriveAdminWorkflowStatus(
   const admin = (state.accounts ?? []).find((account) => account.id === adminAccountId);
   const passwordReady = !requireAdminPasswordRotation || Number(admin?.passwordVersion) > 1;
   const orderedTeams = getOrderedSetupTeams(state, groupId);
+  const activeHalfTeams = getOrderedActiveHalfTeams(state, groupId);
   const assignment = state.activeAssignment ?? {};
   const currentTeam = assignment.groupId === groupId
     ? orderedTeams.find((team) => team.id === assignment.teamId) ?? null
     : null;
   const currentSummary = currentTeam ? state.summariesByTeam?.[currentTeam.id] : null;
   const completedTeams = orderedTeams.filter((team) => state.summariesByTeam?.[team.id]?.isFinal).length;
+  const completedHalfTeams = activeHalfTeams.filter((team) => state.summariesByTeam?.[team.id]?.isFinal).length;
+  const activeHalf = setup?.activeHalf ?? null;
+  const firstHalfTeamIds = getCompetitionHalfTeamIds(setup, "first");
+  const secondHalfTeamIds = getCompetitionHalfTeamIds(setup, "second");
+  const progressHalfId = activeHalf ?? (
+    setup?.status === "draft"
+      ? "first"
+      : setup?.status === "closed"
+        ? "second"
+      : setup?.status === "open" && setup?.halves?.first?.status === "closed"
+        ? "second"
+        : null
+  );
+  const progressHalfTeamIds = progressHalfId === "second" ? secondHalfTeamIds : progressHalfId === "first" ? firstHalfTeamIds : [];
+  const progressHalfCompletedTeams = progressHalfTeamIds.filter((teamId) => state.summariesByTeam?.[teamId]?.isFinal).length;
   const progress = {
     completedTeams,
     totalTeams: orderedTeams.length,
@@ -158,6 +178,24 @@ export function deriveAdminWorkflowStatus(
     currentTeamId: currentTeam?.id ?? null,
     currentSubmittedCount: currentSummary?.submittedCount ?? 0,
     currentRosterCount: currentSummary?.rosterCount ?? (currentTeam ? setup?.judgeIds?.length ?? 0 : 0),
+    activeHalf,
+    halfLabel: activeHalf === "first" ? "上半场" : activeHalf === "second" ? "下半场" : setup?.status === "closed" ? "上下半场已完成" : setup?.status === "draft" ? "上半场待配置" : "中场休息",
+    currentHalf: {
+      id: progressHalfId,
+      completedTeams: progressHalfCompletedTeams,
+      totalTeams: progressHalfTeamIds.length,
+      percentage: progressHalfTeamIds.length ? Math.round((progressHalfCompletedTeams / progressHalfTeamIds.length) * 100) : 0,
+    },
+    firstHalf: {
+      status: setup?.halves?.first?.status ?? "draft",
+      completedTeams: firstHalfTeamIds.filter((teamId) => state.summariesByTeam?.[teamId]?.isFinal).length,
+      totalTeams: firstHalfTeamIds.length,
+    },
+    secondHalf: {
+      status: setup?.halves?.second?.status ?? "draft",
+      completedTeams: secondHalfTeamIds.filter((teamId) => state.summariesByTeam?.[teamId]?.isFinal).length,
+      totalTeams: secondHalfTeamIds.length,
+    },
   };
   const checks = deriveCompetitionPreflight(state, { groupId, passwordReady });
 
@@ -195,7 +233,26 @@ export function deriveAdminWorkflowStatus(
     };
   }
 
-  const nextTeam = orderedTeams.find(
+  if (
+    activeHalf === null &&
+    setup.halves?.first?.status === "closed" &&
+    setup.halves?.second?.status === "draft"
+  ) {
+    const secondHalfConfigured = secondHalfTeamIds.length > 0;
+    return {
+      phase: "intermission",
+      groupId,
+      currentTeamId: null,
+      recommendedTeamId: null,
+      checks,
+      progress,
+      primaryAction: secondHalfConfigured
+        ? { id: "open_second_half", label: "开启下半场", groupId }
+        : { id: "configure_second_half", label: "选择下半场队伍", groupId },
+    };
+  }
+
+  const nextTeam = activeHalfTeams.find(
     (team) => team.id !== currentTeam?.id && !state.summariesByTeam?.[team.id]?.isFinal,
   ) ?? null;
   const currentIndex = currentTeam ? orderedTeams.findIndex((team) => team.id === currentTeam.id) : -1;
@@ -241,10 +298,10 @@ export function deriveAdminWorkflowStatus(
         label: "按顺序公布前三队成绩",
         teamIds: openingBatchTeams.map((team) => team.id),
       },
-      ...(completedTeams === orderedTeams.length ? {
+      ...(completedHalfTeams === activeHalfTeams.length ? {
         secondaryAction: {
-          id: "close_competition_group",
-          label: "暂不展示，直接结束本组",
+          id: activeHalf === "first" ? "finish_first_half" : "close_competition_group",
+          label: activeHalf === "first" ? "暂不展示，结束上半场" : "暂不展示，直接结束本组",
           groupId,
         },
       } : {}),
@@ -264,17 +321,28 @@ export function deriveAdminWorkflowStatus(
       checks,
       progress,
       primaryAction: { id: "publish_current_result", label: `发布 ${currentTeam.teamName} 成绩`, teamId: currentTeam.id },
-      ...(completedTeams === orderedTeams.length ? {
+      ...(completedHalfTeams === activeHalfTeams.length ? {
         secondaryAction: {
-          id: "close_competition_group",
-          label: "暂不展示，直接结束本组",
+          id: activeHalf === "first" ? "finish_first_half" : "close_competition_group",
+          label: activeHalf === "first" ? "暂不展示，结束上半场" : "暂不展示，直接结束本组",
           groupId,
         },
       } : {}),
     };
   }
 
-  if (orderedTeams.length > 0 && completedTeams === orderedTeams.length) {
+  if (activeHalfTeams.length > 0 && completedHalfTeams === activeHalfTeams.length) {
+    if (activeHalf === "first") {
+      return {
+        phase: "ready_for_intermission",
+        groupId,
+        currentTeamId: currentTeam?.id ?? null,
+        recommendedTeamId: null,
+        checks,
+        progress,
+        primaryAction: { id: "finish_first_half", label: "结束上半场，进入中场休息", groupId },
+      };
+    }
     return {
       phase: "ready_to_close",
       groupId,
@@ -298,6 +366,17 @@ export function deriveAdminWorkflowStatus(
     };
   }
 
+  if (!nextTeam) {
+    return {
+      phase: "scoring",
+      groupId,
+      currentTeamId: currentTeam?.id ?? null,
+      recommendedTeamId: null,
+      checks,
+      progress,
+      primaryAction: { id: "monitor_current_team", label: "核对当前半场状态", teamId: currentTeam?.id ?? null },
+    };
+  }
   const nextIndex = orderedTeams.findIndex((team) => team.id === nextTeam.id);
   return {
     phase: "ready_to_dispatch",

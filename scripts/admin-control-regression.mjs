@@ -75,9 +75,11 @@ function fullScores() {
   return Object.fromEntries(itemIds.map((itemId) => [itemId, itemMax[itemId]]));
 }
 
-function createEntry(serverRevision = 0, submitted = true) {
+function createEntry(serverRevision = 0, submitted = true, total = 100) {
+  const scores = fullScores();
+  scores.reportQuality = itemMax.reportQuality - (100 - total);
   return {
-    scores: fullScores(),
+    scores,
     submitted,
     updatedAt: "admin-control-regression",
     clientUpdatedAt: Date.now(),
@@ -136,6 +138,35 @@ async function main() {
     assert(Array.isArray(state.payload.accounts) && state.payload.accounts.length === 8, "default accounts were not materialized");
     assert(state.payload.activeAssignment?.status === "idle", "contest must start without an assignment");
     assert(state.payload.judgeRoster?.judgeIds?.length === 7, "default judge roster is incorrect");
+    assert(
+      state.payload.displaySelection?.rankingAnimationEnabled === false,
+      "live ranking animation must be disabled by default",
+    );
+
+    const initialPublicScoreboard = await requestJson(baseUrl, "/api/scoreboard");
+    assert(initialPublicScoreboard.status === 200, "initial public scoreboard read failed");
+    assert(
+      initialPublicScoreboard.payload.displaySelection?.rankingAnimationEnabled === false &&
+        initialPublicScoreboard.payload.rankingTransition === null,
+      "the public scoreboard must start without a ranking transition",
+    );
+    const initialProjection = await requestJson(baseUrl, "/api/projection");
+    assert(initialProjection.status === 200, "the live projection snapshot must be publicly readable");
+    assert(
+      initialProjection.payload.displaySelection?.projectionView === "slogan" &&
+        initialProjection.payload.displaySelection?.publicationStatus === "idle",
+      "the initial live projection snapshot must point every display to the slogan route",
+    );
+    const legacyLiveProjection = await requestJson(baseUrl, "/api/scoreboard?control=1&teamId=GZ01", {
+      headers: {
+        Authorization: `Bearer ${"x".repeat(43)}`,
+        Referer: `${baseUrl}/scoreboard?live=1`,
+      },
+    });
+    assert(
+      legacyLiveProjection.status === 200 && legacyLiveProjection.payload.displaySelection?.projectionView === "slogan",
+      "an already-open legacy live display must fall back to the public projection instead of receiving 401",
+    );
 
     const initialJudgeWrite = await writeEntry(baseUrl, judgeTokens[0], "001", "GZ01", createEntry());
     assert(initialJudgeWrite.status === 409, "judge write without an assignment must be rejected");
@@ -146,7 +177,7 @@ async function main() {
       headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
       body: JSON.stringify({
         teamIds: configuredTeamIds,
-        judgeIds: ["001", "002", "003", "004", "005", "006", "007"],
+        judgeIds: ["007", "003", "001", "006", "002", "005", "004"],
         revision: state.payload.competitionSetup.groups.gaozhi.revision,
       }),
     });
@@ -157,6 +188,11 @@ async function main() {
     assert(
       JSON.stringify(rankings.payload.rankings.map((team) => team.id)) === JSON.stringify(configuredTeamIds),
       "rankings must include only teams selected for the competition",
+    );
+    const publicRankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi");
+    assert(
+      publicRankings.status === 403,
+      "unpublished rankings must not be readable without an administrator session",
     );
 
     const controlledScoreboard = await requestJson(baseUrl, "/api/scoreboard?control=1", { headers: authHeaders(adminToken) });
@@ -254,29 +290,297 @@ async function main() {
 
     for (let index = 0; index < judgeTokens.length; index += 1) {
       const judgeId = String(index + 1).padStart(3, "0");
-      const saved = await writeEntry(baseUrl, judgeTokens[index], judgeId, "GZ02", createEntry(), secondAssignment.assignmentRevision);
+      const saved = await writeEntry(baseUrl, judgeTokens[index], judgeId, "GZ02", createEntry(0, true, 91 + index), secondAssignment.assignmentRevision);
       assert(saved.status === 200 && saved.payload.entry?.submitted, `${judgeId} final submission failed`);
     }
-    const reliefSaved = await writeEntry(baseUrl, reliefToken, reliefId, "GZ02", createEntry(), secondAssignment.assignmentRevision);
+    const reliefSaved = await writeEntry(baseUrl, reliefToken, reliefId, "GZ02", createEntry(0, true, 98), secondAssignment.assignmentRevision);
     assert(reliefSaved.status === 200 && reliefSaved.payload.entry?.submitted, "relief judge final submission failed");
 
     const finalState = await requestJson(baseUrl, "/api/state", { headers: authHeaders(adminToken) });
     assert(finalState.status === 200, "final state read failed");
     assert(finalState.payload.activeAssignment?.status === "final", "all roster submissions must finalize the assignment");
 
-    const publishFinal = await requestJson(baseUrl, "/api/display-selection", {
+    for (let index = 1; index < judgeTokens.length; index += 1) {
+      const judgeId = String(index + 1).padStart(3, "0");
+      const saved = await writeEntry(baseUrl, adminToken, judgeId, "GZ01", createEntry(0, true, 81 + index));
+      assert(saved.status === 200 && saved.payload.entry?.submitted, `${judgeId} historical GZ01 submission failed`);
+    }
+
+    const enableRankingAnimation = await requestJson(baseUrl, "/api/display-settings", {
       method: "PUT",
       headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
       body: JSON.stringify({
-        teamId: "GZ02",
-        publicationStatus: "final",
+        rankingAnimationEnabled: true,
         revision: finalState.payload.displaySelection.displayRevision,
       }),
     });
-    assert(publishFinal.status === 200, `final publication failed: ${publishFinal.payload.error ?? ""}`);
+    assert(
+      enableRankingAnimation.status === 200 && enableRankingAnimation.payload.displaySelection?.rankingAnimationEnabled === true,
+      `ranking animation enable failed: ${enableRankingAnimation.payload.error ?? ""}`,
+    );
+
+    const staleRankingSetting = await requestJson(baseUrl, "/api/display-settings", {
+      method: "PUT",
+      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        rankingAnimationEnabled: false,
+        revision: finalState.payload.displaySelection.displayRevision,
+      }),
+    });
+    assert(staleRankingSetting.status === 409, "stale ranking animation setting updates must be rejected");
+
+    const publishFirst = await requestJson(baseUrl, "/api/display-selection", {
+      method: "PUT",
+      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        teamId: "GZ01",
+        publicationStatus: "final",
+        revision: enableRankingAnimation.payload.displaySelection.displayRevision,
+      }),
+    });
+    assert(publishFirst.status === 200, `first final publication failed: ${publishFirst.payload.error ?? ""}`);
+    assert(publishFirst.payload.rankingTransition === null, "initial publication must not start a ranking transition");
+    const firstDisplayed = await requestJson(baseUrl, "/api/scoreboard");
+    assert(firstDisplayed.status === 200 && firstDisplayed.payload.displayTeam?.id === "GZ01", "first public publication was not shown");
+    assert(firstDisplayed.payload.rankingTransition === null, "initial public publication must not expose a transition");
+
+    const nonJsonNext = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ displayRevision: publishFirst.payload.displaySelection.displayRevision }),
+    });
+    assert(nonJsonNext.status === 415, "public next-team projection requests must require JSON");
+    const crossSiteNext = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://cross-site.invalid",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ displayRevision: publishFirst.payload.displaySelection.displayRevision }),
+    });
+    assert(crossSiteNext.status === 403, "public next-team projection requests must reject cross-site requests");
+    const staleNext = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: publishFirst.payload.displaySelection.displayRevision - 1 }),
+    });
+    assert(staleNext.status === 409, "stale public next-team projection requests must be rejected");
+    const nextProjection = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({
+        displayRevision: publishFirst.payload.displaySelection.displayRevision,
+      }),
+    });
+    assert(nextProjection.status === 200, `shared next-team projection failed: ${nextProjection.payload.error ?? ""}`);
+    assert(nextProjection.payload.changed === true, "shared next-team projection did not report a state change");
+    assert(!Object.prototype.hasOwnProperty.call(nextProjection.payload, "teamOptions"), "public next-team mutation response must not expose team options");
+    const nextTransition = nextProjection.payload.displaySelection?.rankingTransition;
+    assert(
+      nextTransition?.fromTeamId === "GZ01" &&
+        nextTransition?.toTeamId === "GZ02" &&
+        nextTransition?.durationMs === 1750,
+      "advancing the public projection to the next scored team must start a ranking transition",
+    );
     const displayed = await requestJson(baseUrl, "/api/scoreboard");
     assert(displayed.status === 200 && displayed.payload.displaySelection?.publicationStatus === "final", "scoreboard did not expose final publication");
     assert(displayed.payload.displayTeam?.id === "GZ02", "scoreboard did not expose the selected team");
+    assert(displayed.payload.displaySelection?.rankingAnimationEnabled === true, "public scoreboard did not expose the enabled animation setting");
+    assert(
+      displayed.payload.rankingTransition?.fromTeamId === "GZ01" &&
+        displayed.payload.rankingTransition?.toTeamId === "GZ02" &&
+        displayed.payload.rankingTransition?.durationMs === 1750,
+      "public scoreboard did not expose the active ranking transition",
+    );
+    assert(
+      displayed.payload.rankingTransition?.rankings?.length === 1 &&
+        displayed.payload.rankingTransition.rankings[0]?.id === "GZ01" &&
+        !displayed.payload.rankingTransition.rankings.some((team) => team.id === "GZ02"),
+      "public transition snapshot leaked the target team's score before the animation completed",
+    );
+    assert(
+      JSON.stringify(displayed.payload.displaySummary?.anonymousScores?.map((item) => item.score)) ===
+        JSON.stringify(["91.00", "92.00", "93.00", "94.00", "95.00", "96.00", "97.00", "98.00"]),
+      "scoreboard judge scores must follow account order without exposing judge identities",
+    );
+    const projectionDeviceA = await requestJson(baseUrl, "/api/projection");
+    const projectionDeviceB = await requestJson(baseUrl, "/api/projection");
+    assert(
+      projectionDeviceA.status === 200 && projectionDeviceB.status === 200 &&
+        projectionDeviceA.payload.displaySelection?.displayRevision === projectionDeviceB.payload.displaySelection?.displayRevision &&
+        projectionDeviceA.payload.displayTeam?.id === "GZ02" && projectionDeviceB.payload.displayTeam?.id === "GZ02",
+      "multiple already-open displays must receive the same shared score projection snapshot",
+    );
+    const nonJsonAdvance = await requestJson(baseUrl, "/api/projection/advance", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ transitionRevision: nextTransition.transitionRevision }),
+    });
+    assert(nonJsonAdvance.status === 415, "public projection mutations must reject simple non-JSON requests");
+    const crossSiteAdvance = await requestJson(baseUrl, "/api/projection/advance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://cross-site.invalid",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ transitionRevision: nextTransition.transitionRevision }),
+    });
+    assert(crossSiteAdvance.status === 403, "public projection mutations must reject cross-site requests");
+    const advanceProjection = await requestJson(baseUrl, "/api/projection/advance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ transitionRevision: nextTransition.transitionRevision }),
+    });
+    assert(advanceProjection.status === 200, `shared projection advance failed: ${advanceProjection.payload.error ?? ""}`);
+    const advancedProjectionDeviceA = await requestJson(baseUrl, "/api/projection");
+    const advancedProjectionDeviceB = await requestJson(baseUrl, "/api/projection");
+    assert(
+      advancedProjectionDeviceA.payload.rankingTransition === null &&
+        advancedProjectionDeviceB.payload.rankingTransition === null &&
+        advancedProjectionDeviceA.payload.displaySelection?.displayRevision === advancedProjectionDeviceB.payload.displaySelection?.displayRevision,
+      "one display's right-arrow advance must release every live display from the same ranking transition",
+    );
+
+    const previousRevision = advancedProjectionDeviceA.payload.displaySelection.displayRevision;
+    const nonJsonPrevious = await requestJson(baseUrl, "/api/projection/previous", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ displayRevision: previousRevision }),
+    });
+    assert(nonJsonPrevious.status === 415, "public previous-team projection requests must require JSON");
+    const crossSitePrevious = await requestJson(baseUrl, "/api/projection/previous", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://cross-site.invalid",
+        "Sec-Fetch-Site": "cross-site",
+      },
+      body: JSON.stringify({ displayRevision: previousRevision }),
+    });
+    assert(crossSitePrevious.status === 403, "public previous-team projection requests must reject cross-site requests");
+    const stalePrevious = await requestJson(baseUrl, "/api/projection/previous", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: previousRevision - 1 }),
+    });
+    assert(stalePrevious.status === 409, "stale public previous-team projection requests must be rejected");
+    const previousProjection = await requestJson(baseUrl, "/api/projection/previous", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: previousRevision }),
+    });
+    assert(previousProjection.status === 200, `shared previous-team projection failed: ${previousProjection.payload.error ?? ""}`);
+    assert(
+      previousProjection.payload.changed === true &&
+        previousProjection.payload.reason === "rewound" &&
+        previousProjection.payload.displaySelection?.rankingTransition?.fromTeamId === "GZ02" &&
+        previousProjection.payload.displaySelection?.rankingTransition?.toTeamId === "GZ01",
+      "moving the shared projection backward must preserve the configured ranking transition",
+    );
+    const previousProjectionDeviceA = await requestJson(baseUrl, "/api/projection");
+    const previousProjectionDeviceB = await requestJson(baseUrl, "/api/projection");
+    assert(
+      previousProjectionDeviceA.payload.displayTeam?.id === "GZ01" &&
+        previousProjectionDeviceB.payload.displayTeam?.id === "GZ01" &&
+        previousProjectionDeviceA.payload.displaySelection?.displayRevision === previousProjectionDeviceB.payload.displaySelection?.displayRevision,
+      "one display's left-arrow move must update every already-open live display",
+    );
+    const finishPreviousTransition = await requestJson(baseUrl, "/api/projection/advance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({
+        transitionRevision: previousProjection.payload.displaySelection.rankingTransition.transitionRevision,
+      }),
+    });
+    assert(finishPreviousTransition.status === 200, "previous-team ranking transition could not be completed");
+    const firstTeamProjection = await requestJson(baseUrl, "/api/projection");
+    const startOfGroupRevision = firstTeamProjection.payload.displaySelection.displayRevision;
+    const startOfGroupPrevious = await requestJson(baseUrl, "/api/projection/previous", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: startOfGroupRevision }),
+    });
+    assert(
+      startOfGroupPrevious.status === 200 &&
+        startOfGroupPrevious.payload.changed === false &&
+        startOfGroupPrevious.payload.reason === "start_of_group",
+      "the first configured team must not wrap or cross into another group",
+    );
+    const restoreLastTeam = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: startOfGroupRevision }),
+    });
+    assert(restoreLastTeam.status === 200 && restoreLastTeam.payload.changed === true, "shared projection could not return to the last team");
+    const finishRestoredTransition = await requestJson(baseUrl, "/api/projection/advance", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({
+        transitionRevision: restoreLastTeam.payload.displaySelection.rankingTransition.transitionRevision,
+      }),
+    });
+    assert(finishRestoredTransition.status === 200, "restored next-team ranking transition could not be completed");
+    const restoredLastProjection = await requestJson(baseUrl, "/api/projection");
+    const endOfGroupRevision = restoredLastProjection.payload.displaySelection.displayRevision;
+    const endOfGroupNext = await requestJson(baseUrl, "/api/projection/next", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl,
+        "Sec-Fetch-Site": "same-origin",
+      },
+      body: JSON.stringify({ displayRevision: endOfGroupRevision }),
+    });
+    assert(
+      endOfGroupNext.status === 200 &&
+        endOfGroupNext.payload.changed === false &&
+        endOfGroupNext.payload.reason === "end_of_group",
+      "the last configured team must not wrap or cross into another group",
+    );
+    const projectionAfterEnd = await requestJson(baseUrl, "/api/projection");
+    assert(
+      projectionAfterEnd.payload.displayTeam?.id === "GZ02" &&
+        projectionAfterEnd.payload.displaySelection?.displayRevision === endOfGroupRevision,
+      "an end-of-group next request must leave the shared projection unchanged",
+    );
 
     const submittedEntry = finalState.payload.entriesByJudge?.["001"]?.GZ02;
     const reopen = await writeEntry(
@@ -307,18 +611,62 @@ async function main() {
     });
     assert(disableLastAdmin.status === 409, "the last enabled administrator must be protected");
 
+    const showRankings = await requestJson(baseUrl, "/api/display-view", {
+      method: "PUT",
+      headers: authHeaders(adminToken, { "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        groupId: "gaozhi",
+        revision: reviewedAdminState.payload.displaySelection.displayRevision,
+      }),
+    });
+    assert(showRankings.status === 200, `ranking projection switch failed: ${showRankings.payload.error ?? ""}`);
+    const rankingProjection = await requestJson(baseUrl, "/api/projection");
+    assert(
+      rankingProjection.status === 200 &&
+        rankingProjection.payload.displaySelection?.projectionView === "rankings" &&
+        rankingProjection.payload.ranking?.selectedGroupId === "gaozhi" &&
+        Array.isArray(rankingProjection.payload.ranking?.rankings),
+      "the public live projection snapshot must carry the administrator-selected ranking page",
+    );
+    const publishedRankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi");
+    assert(
+      publishedRankings.status === 200 &&
+        JSON.stringify(publishedRankings.payload.rankings) === JSON.stringify(rankingProjection.payload.ranking.rankings),
+      "the currently published ranking must remain readable by already-open live displays",
+    );
+    const unpublishedOtherGroup = await requestJson(baseUrl, "/api/rankings?groupId=shehui");
+    assert(unpublishedOtherGroup.status === 403, "a live display must not read a different unpublished group");
+    const legacyPublishedRankings = await requestJson(baseUrl, "/api/rankings?groupId=gaozhi", {
+      headers: { Authorization: `Bearer ${"x".repeat(43)}` },
+    });
+    assert(
+      legacyPublishedRankings.status === 200,
+      "an already-open legacy ranking display must fall back to the currently published ranking",
+    );
+
+    const logoutAdmin = await requestJson(baseUrl, "/api/logout", { method: "POST", headers: authHeaders(adminToken) });
+    assert(logoutAdmin.status === 200, "administrator logout failed");
+    const projectionAfterAdminLogout = await requestJson(baseUrl, "/api/projection");
+    assert(
+      projectionAfterAdminLogout.status === 200 &&
+        projectionAfterAdminLogout.payload.displaySelection?.displayRevision === showRankings.payload.displaySelection?.displayRevision &&
+        projectionAfterAdminLogout.payload.displaySelection?.projectionView === "rankings",
+      "live displays must keep following shared state after the administrator session ends",
+    );
+
     await delay(20);
     const logFiles = await readdir(logDir);
     const auditText = (await Promise.all(logFiles.map((file) => readFile(join(logDir, file), "utf8")))).join("\n");
     assert(auditText.includes("assignment_dispatch"), "assignment dispatch was not audited");
     assert(auditText.includes("display_publish"), "display publication was not audited");
+    assert(auditText.includes("display_ranking_animation_update"), "ranking animation setting update was not audited");
     assert(auditText.includes("admin_reopen_submission"), "admin reopen was not audited");
     assert(auditText.includes("itemScores") && auditText.includes('"content":"10.00"'), "audit log did not retain exact two-decimal score details");
     assert(!auditText.includes("admin123") && !auditText.includes("relief-2026"), "audit log exposed a password");
     assert(!auditText.includes('"token"') && !auditText.includes("Authorization"), "audit log exposed a session credential");
 
     assert(auditText.includes("judge_enrollment_create"), "future judge enrollment was not audited");
-    console.log("admin control regression passed (future enrollment, assignment snapshots, account, display, and audit boundaries)");
+    console.log("admin control regression passed (persistent public multi-display projection, future enrollment, assignment snapshots, accounts, and audit boundaries)");
   } catch (error) {
     if (serverOutput.trim()) console.error(serverOutput.trim());
     throw error;

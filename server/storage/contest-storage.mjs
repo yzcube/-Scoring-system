@@ -37,7 +37,7 @@ export function parseRequiredMysqlControl(value, key, expectedGroupIds = []) {
   } else if (key === "display_selection") {
     valid =
       isNullableId(control.teamId) &&
-      ["idle", "temporary", "final", "review_required"].includes(control.publicationStatus) &&
+      ["idle", "waiting", "temporary", "final", "review_required"].includes(control.publicationStatus) &&
       isRevision(control.displayRevision);
   } else if (key === "judge_roster") {
     valid = Array.isArray(control.judgeIds) && isRevision(control.revision);
@@ -48,15 +48,38 @@ export function parseRequiredMysqlControl(value, key, expectedGroupIds = []) {
     const expectedGroupsMatch = expectedGroupIds.length
       ? groupEntries.length === expectedGroupIds.length && expectedGroupIds.every((groupId) => control.groups[groupId])
       : groupEntries.length > 0;
-    const groupsValid = expectedGroupsMatch && groupEntries.every(([groupId, group]) =>
-      group?.groupId === groupId &&
-      ["draft", "open", "closed"].includes(group.status) &&
-      Array.isArray(group.teamIds) &&
-      new Set(group.teamIds).size === group.teamIds.length &&
-      Array.isArray(group.judgeIds) &&
-      new Set(group.judgeIds).size === group.judgeIds.length &&
-      isRevision(group.revision),
-    );
+    const groupsValid = expectedGroupsMatch && groupEntries.every(([groupId, group]) => {
+      const baseValid =
+        group?.groupId === groupId &&
+        ["draft", "open", "closed"].includes(group.status) &&
+        Array.isArray(group.teamIds) &&
+        new Set(group.teamIds).size === group.teamIds.length &&
+        Array.isArray(group.judgeIds) &&
+        new Set(group.judgeIds).size === group.judgeIds.length &&
+        isRevision(group.revision);
+      if (!baseValid || group.halves === undefined) return baseValid;
+      if (!group.halves || typeof group.halves !== "object" || Array.isArray(group.halves)) return false;
+      const validHalf = (half) =>
+        half &&
+        ["draft", "open", "closed"].includes(half.status) &&
+        Array.isArray(half.teamIds) &&
+        new Set(half.teamIds).size === half.teamIds.length;
+      if (!validHalf(group.halves.first) || !validHalf(group.halves.second)) return false;
+      if (![null, "first", "second"].includes(group.activeHalf ?? null)) return false;
+      const firstIds = new Set(group.halves.first.teamIds);
+      const cumulativeIds = new Set(group.teamIds);
+      const halvesAreDisjoint = group.halves.second.teamIds.every((id) => !firstIds.has(id));
+      const halvesBelongToCumulative = [
+        ...group.halves.first.teamIds,
+        ...group.halves.second.teamIds,
+      ].every((id) => cumulativeIds.has(id));
+      const activeHalfConsistent = group.activeHalf === "first"
+        ? group.halves.first.status === "open"
+        : group.activeHalf === "second"
+          ? group.halves.second.status === "open"
+          : group.halves.first.status !== "open" && group.halves.second.status !== "open";
+      return halvesAreDisjoint && halvesBelongToCumulative && activeHalfConsistent;
+    });
     const openGroupIds = groupEntries
       .filter(([, group]) => group?.status === "open")
       .map(([groupId]) => groupId);
@@ -544,9 +567,14 @@ export function createContestStorage({
       const display = {
         teamId: null,
         publicationStatus: "idle",
+        projectionView: "slogan",
+        rankingGroupId: groups[0]?.id ?? "gaozhi",
         displayRevision: 0,
         publishedAt: "",
         updatedAt: "",
+        rankingAnimationEnabled: false,
+        revealedTeamIdsByGroup: Object.fromEntries(groups.map((group) => [group.id, []])),
+        rankingTransition: null,
       };
       await upsertMysqlControl(
         connection,

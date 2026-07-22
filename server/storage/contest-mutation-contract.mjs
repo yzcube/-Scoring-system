@@ -64,15 +64,17 @@ export function createContestPersistencePlan(effect) {
     case "display":
       return { type: "display", persistDisplay: true };
     case "competition_setup":
-      if (!["save", "open"].includes(effect.operation)) {
+      if (!["save", "open", "finish_first_half", "save_second_half", "open_second_half"].includes(effect.operation)) {
         throw new Error("Contest effect competition_setup requires operation");
       }
+      const assignmentOperations = new Set(["open", "finish_first_half", "open_second_half"]);
+      const rosterOperations = new Set(["open", "finish_first_half", "open_second_half"]);
       return {
         type: "competition_setup",
         operation: effect.operation,
         persistCompetitionSetup: true,
-        persistRoster: effect.operation === "open",
-        persistAssignment: effect.operation === "open",
+        persistRoster: rosterOperations.has(effect.operation),
+        persistAssignment: assignmentOperations.has(effect.operation),
       };
     case "competition_close":
       return {

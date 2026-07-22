@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import mysql from "mysql2/promise";
 import { contestGroups, defaultCandidates, defaultCandidateOrderByGroup, defaultGroupId } from "./shared/contestData.js";
-import { getOrderedSetupTeams, normalizeCompetitionSetup } from "./shared/competitionSetup.js";
+import { getCompetitionRankingScope, getOrderedSetupTeams, normalizeCompetitionSetup } from "./shared/competitionSetup.js";
 import { deriveAdminWorkflowStatus } from "./shared/adminWorkflow.js";
 import {
   createBlankScores,
@@ -31,6 +31,12 @@ import { createSessionApiRoutes } from "./server/session-api-routes.mjs";
 import { createContestApiRoutes } from "./server/contest-api-routes.mjs";
 import { createContestStorage } from "./server/storage/contest-storage.mjs";
 import { getFormalRoundResidue, readBoundedInteger, resolveAdminPasswordRotationPolicy } from "./server/runtime-policy.mjs";
+import { getFinalResultExportData } from "./server/result-export-data.mjs";
+import {
+  buildFinalResultWorkbook,
+  buildResultExportFilename,
+  spreadsheetContentType,
+} from "./server/result-export-xlsx.mjs";
 
 const port = readBoundedInteger(process.env.PORT, 8776, { name: "PORT", min: 1, max: 65_535 });
 const host = process.env.HOST || "0.0.0.0";
@@ -38,6 +44,7 @@ const rootDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const distDir = join(rootDir, "dist");
 const dataDir = process.env.CONTEST_DATA_DIR ? resolve(process.env.CONTEST_DATA_DIR) : join(rootDir, "data");
 const stateFile = join(dataDir, "contest-state.json");
+const sessionFile = join(dataDir, "contest-sessions.json");
 const logDir = process.env.CONTEST_LOG_DIR ? resolve(process.env.CONTEST_LOG_DIR) : join(dataDir, "logs");
 const storageMode = (
   process.env.CONTEST_STORAGE ||
@@ -72,7 +79,6 @@ const mysqlConnectionConfig = process.env.CONTEST_DATABASE_URL
       decimalNumbers: true,
     };
 const maxRequestBodyBytes = readBoundedInteger(process.env.MAX_REQUEST_BODY_BYTES, 64 * 1024, { name: "MAX_REQUEST_BODY_BYTES", min: 1024, max: 10 * 1024 * 1024 });
-const sessionTtlMs = readBoundedInteger(process.env.SESSION_TTL_MS, 12 * 60 * 60 * 1000, { name: "SESSION_TTL_MS", min: 60_000, max: 7 * 24 * 60 * 60 * 1000 });
 const passwordScryptCost = readBoundedInteger(process.env.CONTEST_SCRYPT_N, 2 ** 15, { name: "CONTEST_SCRYPT_N", min: 2 ** 14, max: 2 ** 17 });
 const passwordScryptR = 8;
 const passwordScryptP = readBoundedInteger(process.env.CONTEST_SCRYPT_P, 3, { name: "CONTEST_SCRYPT_P", min: 1, max: 8 });
@@ -301,6 +307,11 @@ function createEmptyState() {
             status: "draft",
             teamIds: [],
             judgeIds: [],
+            activeHalf: null,
+            halves: {
+              first: { status: "draft", teamIds: [], openedAt: "", closedAt: "" },
+              second: { status: "draft", teamIds: [], openedAt: "", closedAt: "" },
+            },
             revision: 0,
             openedAt: "",
             closedAt: "",
@@ -326,9 +337,14 @@ function createEmptyState() {
     displaySelection: {
       teamId: null,
       publicationStatus: "idle",
+      projectionView: "slogan",
+      rankingGroupId: defaultGroupId,
       displayRevision: 0,
       publishedAt: "",
       updatedAt: "",
+      rankingAnimationEnabled: false,
+      revealedTeamIdsByGroup: Object.fromEntries(contestGroups.map((group) => [group.id, []])),
+      rankingTransition: null,
     },
   };
 }
@@ -501,14 +517,87 @@ function sanitizeActiveAssignment(rawAssignment, state) {
 
 function sanitizeDisplaySelection(rawSelection, state) {
   const team = getTeamById(state, normalizeId(rawSelection?.teamId, 16));
-  const statuses = new Set(["idle", "temporary", "final", "review_required"]);
+  const statuses = new Set(["idle", "waiting", "temporary", "final", "review_required"]);
   const publicationStatus = team?.status === "active" && statuses.has(rawSelection?.publicationStatus) ? rawSelection.publicationStatus : "idle";
+  const teamsUnderReview = new Set(
+    Object.values(state.activeAssignment?.rescoreAssignmentsByJudge ?? {})
+      .map((assignment) => normalizeId(assignment?.teamId, 16))
+      .filter(Boolean),
+  );
+  if (publicationStatus === "review_required" && team) teamsUnderReview.add(team.id);
+  const revealedTeamIdsByGroup = Object.fromEntries(
+    contestGroups.map((group) => {
+      const validTeamsById = new Map(
+        state.teams
+          .filter((item) => item.groupId === group.id && item.status === "active" && !teamsUnderReview.has(item.id))
+          .map((item) => [item.id, item]),
+      );
+      const rawTeamIds = Array.isArray(rawSelection?.revealedTeamIdsByGroup?.[group.id])
+        ? rawSelection.revealedTeamIdsByGroup[group.id]
+        : [];
+      return [
+        group.id,
+        rawTeamIds
+          .map((id) => normalizeId(id, 16))
+          .filter((id, index, values) =>
+            validTeamsById.has(id) &&
+            getCompositeSummary(state, id).submittedCount > 0 &&
+            values.indexOf(id) === index),
+      ];
+    }),
+  );
+  const displayRevision = clampInteger(rawSelection?.displayRevision);
+  const rawTransition = rawSelection?.rankingTransition;
+  const transitionFromTeam = getTeamById(state, normalizeId(rawTransition?.fromTeamId, 16));
+  const transitionToTeam = getTeamById(state, normalizeId(rawTransition?.toTeamId, 16));
+  const transitionGroupId = sanitizeGroupId(rawTransition?.groupId);
+  const transitionTeamIds = Array.isArray(rawTransition?.teamIds)
+    ? rawTransition.teamIds
+        .map((id) => normalizeId(id, 16))
+        .filter((id, index, values) => revealedTeamIdsByGroup[transitionGroupId]?.includes(id) && values.indexOf(id) === index)
+    : [];
+  const transitionRevision = clampInteger(rawTransition?.transitionRevision);
+  const rawDurationMs = clampInteger(rawTransition?.durationMs, 1750);
+  const transitionStartedAt = typeof rawTransition?.startedAt === "string"
+    ? rawTransition.startedAt.slice(0, 64)
+    : "";
+  const rankingAnimationEnabled = rawSelection?.rankingAnimationEnabled === true;
+  const projectionView = ["scoreboard", "slogan", "rankings"].includes(rawSelection?.projectionView)
+    ? rawSelection.projectionView
+    : ["waiting", "final", "temporary"].includes(publicationStatus) ? "scoreboard" : "slogan";
+  const rankingGroupId = state.competitionSetup?.groups?.[rawSelection?.rankingGroupId]
+    ? rawSelection.rankingGroupId
+    : team?.groupId ?? state.competitionSetup?.activeGroupId ?? defaultGroupId;
+  const rankingTransition = rankingAnimationEnabled &&
+    publicationStatus !== "idle" &&
+    team?.id === transitionToTeam?.id &&
+    transitionFromTeam?.groupId === transitionGroupId &&
+    transitionToTeam &&
+    transitionFromTeam.id !== transitionToTeam.id &&
+    transitionRevision === displayRevision &&
+    transitionTeamIds.includes(transitionFromTeam.id) &&
+    Number.isFinite(Date.parse(transitionStartedAt))
+    ? {
+        transitionRevision,
+        groupId: transitionGroupId,
+        fromTeamId: transitionFromTeam.id,
+        toTeamId: transitionToTeam.id,
+        startedAt: transitionStartedAt,
+        durationMs: Math.min(120_000, Math.max(1750, rawDurationMs)),
+        teamIds: transitionTeamIds,
+      }
+    : null;
   return {
     teamId: team?.status === "active" && publicationStatus !== "idle" ? team.id : null,
     publicationStatus,
-    displayRevision: clampInteger(rawSelection?.displayRevision),
+    projectionView,
+    rankingGroupId,
+    displayRevision,
     publishedAt: typeof rawSelection?.publishedAt === "string" ? rawSelection.publishedAt.slice(0, 64) : "",
     updatedAt: typeof rawSelection?.updatedAt === "string" ? rawSelection.updatedAt.slice(0, 64) : "",
+    rankingAnimationEnabled,
+    revealedTeamIdsByGroup,
+    rankingTransition,
   };
 }
 
@@ -676,9 +765,22 @@ function publicDisplaySelection(selection) {
   return {
     teamId: selection.teamId,
     publicationStatus: selection.publicationStatus,
+    projectionView: selection.projectionView ?? (["waiting", "final", "temporary"].includes(selection.publicationStatus) ? "scoreboard" : "slogan"),
+    rankingGroupId: selection.rankingGroupId ?? defaultGroupId,
     displayRevision: selection.displayRevision,
     publishedAt: selection.publishedAt,
     updatedAt: selection.updatedAt,
+    rankingAnimationEnabled: selection.rankingAnimationEnabled === true,
+    rankingTransition: selection.rankingTransition
+      ? {
+          transitionRevision: selection.rankingTransition.transitionRevision,
+          groupId: selection.rankingTransition.groupId,
+          fromTeamId: selection.rankingTransition.fromTeamId,
+          toTeamId: selection.rankingTransition.toTeamId,
+          startedAt: selection.rankingTransition.startedAt,
+          durationMs: selection.rankingTransition.durationMs,
+        }
+      : null,
   };
 }
 
@@ -718,7 +820,15 @@ function getAdminStatePayload(state, account) {
       groups: Object.fromEntries(
         Object.entries(state.competitionSetup.groups).map(([groupId, setup]) => [
           groupId,
-          { ...setup, teamIds: [...setup.teamIds], judgeIds: [...setup.judgeIds] },
+          {
+            ...setup,
+            teamIds: [...setup.teamIds],
+            judgeIds: [...setup.judgeIds],
+            halves: {
+              first: { ...setup.halves.first, teamIds: [...setup.halves.first.teamIds] },
+              second: { ...setup.halves.second, teamIds: [...setup.halves.second.teamIds] },
+            },
+          },
         ]),
       ),
     },
@@ -840,7 +950,7 @@ function setAuditActor(request, account) {
 
 function shouldLogRequestAudit(audit, statusCode) {
   if (statusCode >= 400) return true;
-  return !["health_check", "session_check", "state_read", "scoreboard_read", "rankings_read"].includes(audit.action);
+  return !["health_check", "session_check", "state_read", "scoreboard_read", "rankings_read", "projection_read"].includes(audit.action);
 }
 
 function finishRequestAudit(request, response) {
@@ -902,7 +1012,7 @@ const sessionService = createSessionService({
   readState,
   getAccountById,
   HttpError,
-  sessionTtlMs,
+  fileSessionPath: sessionFile,
   setAuditActor,
   clampInteger,
 });
@@ -976,6 +1086,41 @@ function createAccountId(state) {
   return accountId;
 }
 
+function getRankedTeamRows(state, groupId, { teamIds = null, includeUnscored = true } = {}) {
+  const scopedIds = Array.isArray(teamIds) ? new Set(teamIds) : null;
+  const sortedTeams = getOrderedSetupTeams(state, groupId)
+    .filter((team) => !scopedIds || scopedIds.has(team.id))
+    .map((team) => {
+      const summary = getCompositeSummary(state, team.id);
+      const numericScore = summary.display === "--" ? null : Number(summary.display);
+      return {
+        ...publicTeam(team),
+        groupLabel: getGroupLabel(team.groupId),
+        submittedCount: summary.submittedCount,
+        rosterCount: summary.rosterCount,
+        score: summary.display,
+        scoreValue: numericScore,
+        status: summary.status,
+        isFinal: summary.isFinal,
+      };
+    })
+    .filter((team) => includeUnscored || team.scoreValue !== null)
+    .sort((left, right) => {
+      const leftScore = left.scoreValue ?? -1;
+      const rightScore = right.scoreValue ?? -1;
+      return rightScore - leftScore || left.appearanceOrder - right.appearanceOrder || left.id.localeCompare(right.id);
+    });
+  let previousScore = null;
+  let previousRank = 0;
+  return sortedTeams.map((team, index) => {
+    if (team.scoreValue === null) return { ...team, rank: null };
+    const rank = previousScore !== null && team.scoreValue === previousScore ? previousRank : index + 1;
+    previousScore = team.scoreValue;
+    previousRank = rank;
+    return { ...team, rank };
+  });
+}
+
 function getScoreboardPayload(state, requestedTeamId = "", { controller = false } = {}) {
   const selection = publicDisplaySelection(state.displaySelection);
   const teamOptions = contestGroups.flatMap((group) => {
@@ -1010,14 +1155,40 @@ function getScoreboardPayload(state, requestedTeamId = "", { controller = false 
     team?.status === "active" &&
       (isUrlSelected
         ? summary.isFinal || summary.submittedCount >= 1
-        : ((selection.publicationStatus === "final" && summary.isFinal) ||
+        : (selection.publicationStatus === "waiting" ||
+          (selection.publicationStatus === "final" && summary.isFinal) ||
           (selection.publicationStatus === "temporary" && summary.submittedCount >= 1))),
   );
   const visibleSelectedOption = controller || canDisplay ? selectedOption : null;
   const canPreviewTeamIdentity = Boolean(controller && isUrlSelected && team?.status === "active");
   const visibleSelection = controller || canDisplay
     ? selection
-    : { teamId: null, publicationStatus: "idle", displayRevision: 0, publishedAt: "", updatedAt: "" };
+    : { teamId: null, publicationStatus: "idle", displayRevision: 0, publishedAt: "", updatedAt: "", rankingAnimationEnabled: false, rankingTransition: null };
+  const selectedGroupId = selectedOption?.groupId ?? "";
+  const revealedTeamIds = selectedGroupId
+    ? [...(state.displaySelection.revealedTeamIdsByGroup?.[selectedGroupId] ?? [])]
+    : [];
+  const rankingSnapshotTeamIds = team && summary?.submittedCount > 0
+    ? [...new Set([...revealedTeamIds, team.id])]
+    : revealedTeamIds;
+  const rankingSnapshot = controller && selectedGroupId
+    ? getRankedTeamRows(state, selectedGroupId, { teamIds: rankingSnapshotTeamIds })
+    : [];
+  const rawRankingTransition = state.displaySelection.rankingTransition;
+  const rankingTransition = rawRankingTransition &&
+    state.displaySelection.rankingAnimationEnabled === true &&
+    rawRankingTransition.toTeamId === team?.id &&
+    (controller || canDisplay)
+    ? {
+        transitionRevision: rawRankingTransition.transitionRevision,
+        groupId: rawRankingTransition.groupId,
+        fromTeamId: rawRankingTransition.fromTeamId,
+        toTeamId: rawRankingTransition.toTeamId,
+        startedAt: rawRankingTransition.startedAt,
+        durationMs: rawRankingTransition.durationMs,
+        rankings: getRankedTeamRows(state, rawRankingTransition.groupId, { teamIds: rawRankingTransition.teamIds }),
+      }
+    : null;
   return {
     displaySelection: visibleSelection,
     controller,
@@ -1026,51 +1197,64 @@ function getScoreboardPayload(state, requestedTeamId = "", { controller = false 
     teamOptions,
     displayTeam: canDisplay || canPreviewTeamIdentity ? publicTeam(team) : null,
     displaySummary: canDisplay || canPreviewTeamIdentity ? summary : null,
+    rankingSnapshot,
+    rankingTransition,
   };
 }
 
 function getRankingsPayload(state, requestedGroupId = "") {
   const selectedGroupId = isKnownGroupId(requestedGroupId) ? requestedGroupId : state.activeAssignment.groupId || defaultGroupId;
+  const setup = state.competitionSetup?.groups?.[selectedGroupId];
+  const rankingScope = getCompetitionRankingScope(setup);
   const groups = contestGroups.map((group) => ({
     id: group.id,
     label: group.label,
     active: group.id === selectedGroupId,
   }));
-  const groupTeams = getOrderedSetupTeams(state, selectedGroupId);
-  const sortedTeams = groupTeams
-    .map((team) => {
-      const summary = getCompositeSummary(state, team.id);
-      const numericScore = summary.display === "--" ? null : Number(summary.display);
-      return {
-        ...publicTeam(team),
-        groupLabel: getGroupLabel(team.groupId),
-        submittedCount: summary.submittedCount,
-        rosterCount: summary.rosterCount,
-        score: summary.display,
-        scoreValue: numericScore,
-        status: summary.status,
-        isFinal: summary.isFinal,
-      };
-    })
-    .sort((left, right) => {
-      const leftScore = left.scoreValue ?? -1;
-      const rightScore = right.scoreValue ?? -1;
-      return rightScore - leftScore || left.appearanceOrder - right.appearanceOrder || left.id.localeCompare(right.id);
-    });
-  let previousScore = null;
-  let previousRank = 0;
-  const rankedTeams = sortedTeams.map((team, index) => {
-    const rank = team.scoreValue !== null && previousScore !== null && team.scoreValue === previousScore ? previousRank : index + 1;
-    previousScore = team.scoreValue;
-    previousRank = rank;
-    return { ...team, rank };
-  });
+  const rankedTeams = getRankedTeamRows(state, selectedGroupId, { teamIds: rankingScope.teamIds });
 
   return {
     selectedGroupId,
     selectedGroupLabel: getGroupLabel(selectedGroupId),
+    rankingScope: rankingScope.id,
+    rankingTitle: `${getGroupLabel(selectedGroupId)}${rankingScope.title}`,
+    rankingScopeLabel: rankingScope.label,
     groups,
     rankings: rankedTeams,
+  };
+}
+
+function getProjectionPayload(state) {
+  const selection = publicDisplaySelection(state.displaySelection);
+  const scoreboard = getScoreboardPayload(state);
+  const hasDisplayableTeam = Boolean(scoreboard.displayTeam && scoreboard.displaySummary);
+  const projectionView = selection.projectionView === "rankings"
+    ? "rankings"
+    : hasDisplayableTeam && selection.projectionView === "scoreboard"
+      ? "scoreboard"
+      : "slogan";
+  const displaySelection = projectionView === "slogan"
+    ? {
+        ...selection,
+        teamId: null,
+        publicationStatus: "idle",
+        projectionView,
+        rankingTransition: null,
+      }
+    : { ...selection, projectionView };
+  return {
+    displaySelection,
+    controller: false,
+    selectedTeam: projectionView === "scoreboard" ? scoreboard.selectedTeam : null,
+    selectedTeamId: projectionView === "scoreboard" ? scoreboard.selectedTeamId : null,
+    teamOptions: [],
+    displayTeam: projectionView === "scoreboard" ? scoreboard.displayTeam : null,
+    displaySummary: projectionView === "scoreboard" ? scoreboard.displaySummary : null,
+    rankingSnapshot: [],
+    rankingTransition: projectionView === "scoreboard" ? scoreboard.rankingTransition : null,
+    ranking: projectionView === "rankings"
+      ? getRankingsPayload(state, displaySelection.rankingGroupId)
+      : null,
   };
 }
 
@@ -1086,7 +1270,7 @@ function getLanUrls() {
     .map((item) => `http://${item.address}:${port}/`);
 }
 
-const { readJsonBody, sendApiError, sendJson, serveStatic } = createHttpRoutes({
+const { readJsonBody, sendApiError, sendJson, sendBinary, serveStatic } = createHttpRoutes({
   distDir,
   maxRequestBodyBytes,
   HttpError,
@@ -1097,7 +1281,7 @@ const { readJsonBody, sendApiError, sendJson, serveStatic } = createHttpRoutes({
 const handleSessionApi = createSessionApiRoutes({
   runtime: { storageMode, isShuttingDown: () => isShuttingDown, getLanUrls },
   storage: { checkStorageHealth },
-  http: { readJsonBody, sendJson, HttpError },
+  http: { readJsonBody, sendJson, sendBinary, HttpError },
   auth: {
     normalizeUsername,
     assertLoginNotLimited,
@@ -1112,7 +1296,9 @@ const handleSessionApi = createSessionApiRoutes({
     getSession,
   },
   state: { readState, getAccountById, queueSessionRevocation },
-  presentation: { getScoreboardPayload, getRankingsPayload, getAdminStatePayload, getJudgeStatePayload },
+  presentation: { getProjectionPayload, getScoreboardPayload, getRankingsPayload, getAdminStatePayload, getJudgeStatePayload },
+  resultExport: { getFinalResultExportData, buildFinalResultWorkbook, buildResultExportFilename, spreadsheetContentType },
+  input: { isKnownGroupId },
 });
 
 const handleContestApi = createContestApiRoutes({
@@ -1220,7 +1406,7 @@ server.listen(port, host, () => {
         : undefined,
     logDir,
     maxRequestBodyBytes,
-    sessionTtlMs,
+    sessionPolicy: "until_revoked",
     httpHeadersTimeoutMs,
     httpRequestTimeoutMs,
     httpKeepAliveTimeoutMs,

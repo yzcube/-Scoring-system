@@ -16,11 +16,19 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  getControlledProjectionRoute,
   getLiveScoreboardEntryRoute,
   getScoreboardRoute,
   normalizeAppPath,
+  SCOREBOARD_CLEAN_DEMO_PATH,
+  SCOREBOARD_DEMO_PATH,
+  SCOREBOARD_PREMIUM_DEMO_PATH,
   SCOREBOARD_RESULTS_PATH,
   SCOREBOARD_SLOGAN_PATH,
+  SCOREBOARD_TECH_BACKUP_DEMO_PATH,
+  SCOREBOARD_TECH_DEMO_PATH,
+  SCOREBOARD_TECH_NINE_JUDGES_DEMO_PATH,
+  SCOREBOARD_TECH_TOTAL_EXTREMES_GROUPED_DEMO_PATH,
 } from "./appRoute.js";
 import { mergeConfiguredTeamOrder, reconcileConfiguredTeamOrder } from "./teamOrderScope.js";
 import {
@@ -30,7 +38,9 @@ import {
   ArrowUp,
   ChevronDown,
   ClipboardList,
+  Download,
   ExternalLink,
+  FileSpreadsheet,
   GripVertical,
   Keyboard,
   KeyRound,
@@ -50,8 +60,20 @@ import {
 } from "lucide-react";
 import { contestGroups, defaultCandidateOrderByGroup } from "../shared/contestData.js";
 import { deriveCompetitionPreflight, deriveDispatchControlState } from "../shared/adminWorkflow.js";
+import { getActiveCompetitionHalfTeamIds, getCompetitionHalfTeamIds, getCompetitionRankingScope } from "../shared/competitionSetup.js";
 import { createOperationGeneration } from "./sessionWorkGeneration.js";
 import { getScoreboardJudgeLayout } from "./scoreboardLayout.js";
+import { getScoreboardTeamNamePresentation, isScoreboardLatinFragment } from "./scoreboardTeamName.js";
+import { getOverallRankingColumns, getOverallRankingRowHeight, getOverallRankingRowSlotCount } from "./rankingsLayout.js";
+import {
+  getScoreboardRankingColumnCount,
+  getScoreboardRankingMotionFrames,
+  getScoreboardRankingRowHeight,
+  getScoreboardRankingSlot,
+  getScoreboardRankingSlotOffset,
+  getScoreboardRankingVisualRowCount,
+} from "./scoreboardRankingLayout.js";
+import { getDisplayPublicationStatus } from "./displayPublication.js";
 import {
   allItems,
   createBlankScores,
@@ -71,6 +93,11 @@ const judgeDraftStorageKey = "campus-final-tablet-controlled-drafts-v1";
 const deviceStorageKey = "campus-final-tablet-device-v1";
 const scoreboardNavigationPollMs = 500;
 const scoreboardDataPollMs = 2000;
+const scoreboardRankingIntroMs = 250;
+const scoreboardRankingHoldMs = 1500;
+const scoreboardRankingPerStepMs = 260;
+const scoreboardRankingTargetLoadTimeoutMs = 8000;
+const appRouteChangeEvent = "contest-app-route-change";
 const scoreDraftPattern = /^\d{0,2}([.,]\d{0,2})?$/;
 const emptyAssignment = {
   groupId: contestGroups[0]?.id ?? "gaozhi",
@@ -83,7 +110,17 @@ const emptyAssignment = {
   rescoreAssignmentsByJudge: {},
   updatedAt: "",
 };
-const emptyDisplay = { teamId: null, publicationStatus: "idle", displayRevision: 0, publishedAt: "", updatedAt: "" };
+const emptyDisplay = {
+  teamId: null,
+  publicationStatus: "idle",
+  projectionView: "slogan",
+  rankingGroupId: contestGroups[0]?.id ?? "gaozhi",
+  displayRevision: 0,
+  publishedAt: "",
+  updatedAt: "",
+  rankingAnimationEnabled: false,
+  rankingTransition: null,
+};
 
 function createEmptyClientState() {
   return {
@@ -136,44 +173,13 @@ function isNewerDraft(localEntry, serverEntry) {
   return localRevision > serverRevision || (localRevision === serverRevision && Number(localEntry?.clientUpdatedAt ?? 0) > Number(serverEntry?.clientUpdatedAt ?? 0));
 }
 
-function getStableShuffleRank(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function shuffledScores(scores, teamId) {
-  return (scores ?? [])
-    .map((score, index) => ({ ...score, sourceIndex: index, rank: getStableShuffleRank(`${teamId}:${index}`) }))
-    .sort((left, right) => left.rank - right.rank);
-}
-
 function getTeamMetaLine(team, fallback = "未填写项目名称") {
   return [team.registrationNumber || "未填写报名编号", team.projectName || fallback].filter(Boolean).join(" · ");
 }
 
 function ScoreboardTeamName({ name }) {
-  const text = String(name ?? "");
-  const isLatinName = /^[\sA-Za-z0-9 .,&+_-]+$/.test(text);
-  const isShortCjkName = !/[A-Za-z]/.test(text) && Array.from(text).length <= 8;
-  const isCompactName = Array.from(text.trim()).length <= 20;
-  const fragments = text.split(/([A-Za-z][A-Za-z0-9&+_-]*)/g).filter(Boolean);
-  const className = [isLatinName ? "is-latin-name" : "", isShortCjkName ? "is-short-cjk-name" : "", isCompactName ? "is-compact-name" : ""].filter(Boolean).join(" ") || undefined;
-  return <h1 className={className}>{fragments.map((fragment, index) => /[A-Za-z]/.test(fragment) ? <span className="single-scoreboard-name-latin" key={`${fragment}-${index}`}>{fragment}</span> : fragment)}</h1>;
-}
-
-function ScoreboardPromotion() {
-  return (
-    <div className="scoreboard-promo-copy" role="status" aria-label="AI赋能跨电 数智融通东盟">
-      <p className="scoreboard-promo-slogan">
-        <span className="scoreboard-promo-line"><em>AI</em><strong>赋能跨电</strong></span>
-        <span className="scoreboard-promo-line"><strong>数智融通</strong><em>东盟</em></span>
-      </p>
-    </div>
-  );
+  const { text, fragments, className } = getScoreboardTeamNamePresentation(name);
+  return <h1 className={className}>{fragments.map((fragment, index) => isScoreboardLatinFragment(fragment) ? <span className="single-scoreboard-name-latin" key={`${fragment}-${index}`}>{fragment}</span> : fragment)}</h1>;
 }
 
 function loadToken() {
@@ -214,6 +220,12 @@ function loadProjectionControlToken() {
   try {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const fragmentToken = hash.get("controlToken") || "";
+    const isLiveProjection = new URLSearchParams(window.location.search).get("live") === "1";
+    if (isLiveProjection) {
+      sessionStorage.removeItem(projectionControlTokenStorageKey);
+      if (fragmentToken) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      return "";
+    }
     if (fragmentToken) {
       sessionStorage.setItem(projectionControlTokenStorageKey, fragmentToken);
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
@@ -251,35 +263,168 @@ async function requestApi(path, options = {}, fallbackMessage = "评分服务器
   return readApi(response, fallbackMessage);
 }
 
+function getDownloadFilename(response, fallbackFilename) {
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Fall through to the ASCII filename when the header is malformed.
+    }
+  }
+  const asciiMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1]?.trim() || fallbackFilename;
+}
+
+async function requestApiDownload(path, options = {}, fallbackMessage = "文件下载失败") {
+  const response = await fetch(path, { cache: "no-store", ...options });
+  if (!response.ok) {
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // Keep the supplied fallback for malformed error responses.
+    }
+    throw createApiError(payload.error || fallbackMessage, response.status);
+  }
+  return {
+    blob: await response.blob(),
+    filename: getDownloadFilename(response, "成绩排名.xlsx"),
+  };
+}
+
 function replaceScoreboardRoute(pathname, { live = false } = {}) {
   const nextUrl = new URL(pathname, window.location.origin);
   if (live) nextUrl.searchParams.set("live", "1");
   const nextLocation = `${nextUrl.pathname}${nextUrl.search}`;
   if (`${window.location.pathname}${window.location.search}` === nextLocation) return;
-  window.location.replace(nextLocation);
+  window.history.replaceState(null, "", nextLocation);
+  window.dispatchEvent(new Event(appRouteChangeEvent));
+}
+
+function getFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function ProjectionFullscreenControl() {
+  const [isFullscreen, setIsFullscreen] = useState(() => Boolean(getFullscreenElement()));
+  const [isEntering, setIsEntering] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  useEffect(() => {
+    let escapeSyncTimer = 0;
+    const syncFullscreenState = () => {
+      const nextIsFullscreen = Boolean(getFullscreenElement());
+      setIsFullscreen(nextIsFullscreen);
+      if (nextIsFullscreen) setErrorMessage("");
+    };
+    const syncAfterEscape = (event) => {
+      if (event.key !== "Escape") return;
+      window.clearTimeout(escapeSyncTimer);
+      escapeSyncTimer = window.setTimeout(syncFullscreenState, 100);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    window.addEventListener("keydown", syncAfterEscape);
+    return () => {
+      window.clearTimeout(escapeSyncTimer);
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+      window.removeEventListener("keydown", syncAfterEscape);
+    };
+  }, []);
+
+  async function enterFullscreen() {
+    if (isEntering) return;
+    const root = document.documentElement;
+    const requestFullscreen = root.requestFullscreen || root.webkitRequestFullscreen;
+    if (!requestFullscreen) {
+      setErrorMessage("当前浏览器不支持页面全屏");
+      return;
+    }
+    setIsEntering(true);
+    setErrorMessage("");
+    try {
+      await Promise.resolve(requestFullscreen.call(root));
+      setIsFullscreen(Boolean(getFullscreenElement()));
+    } catch {
+      setErrorMessage("浏览器未允许全屏，请再次点击");
+    } finally {
+      setIsEntering(false);
+    }
+  }
+
+  if (isFullscreen) return null;
+  return (
+    <div className="projection-fullscreen-control">
+      <button type="button" onClick={enterFullscreen} disabled={isEntering}>
+        {isEntering ? "正在进入全屏" : "进入全屏"}
+      </button>
+      {errorMessage ? <span role="status">{errorMessage}</span> : null}
+    </div>
+  );
+}
+
+function ControlledProjectionPage({ children }) {
+  const isLiveProjection = new URLSearchParams(window.location.search).get("live") === "1";
+  return (
+    <>
+      {children}
+      {isLiveProjection ? <ProjectionFullscreenControl /> : null}
+    </>
+  );
+}
+
+function formatScoreboardDrawOrder(orderLabel) {
+  const value = Number.parseInt(String(orderLabel ?? "").split("/")[0], 10);
+  return Number.isFinite(value) && value > 0 ? String(value).padStart(2, "0") : "--";
 }
 
 function ScoreboardSloganStage() {
   return (
-    <main className="scoreboard-page single-scoreboard-page">
-      <section className="single-scoreboard-shell scoreboard-promo-stage" aria-label="AI跨境电商比赛候场宣传页">
-        <ScoreboardPromotion />
+    <main className="scoreboard-page single-scoreboard-page scoreboard-slogan-page">
+      <section className="single-scoreboard-shell scoreboard-promo-stage" aria-label="2026面向东盟 AI+跨境电商创新应用大赛宣传页">
+        <picture className="scoreboard-slogan-picture">
+          <source
+            media="(min-width: 900px) and (min-height: 900px) and (min-aspect-ratio: 5/6) and (max-aspect-ratio: 6/5)"
+            srcSet="/assets/scoreboard-slogan-2026-asean-nanning-square.png"
+            type="image/png"
+          />
+          <img
+            className="scoreboard-slogan-image"
+            src="/assets/scoreboard-slogan-2026-asean-nanning-16x9.jpg"
+            alt="2026面向东盟 AI+跨境电商创新应用大赛"
+            decoding="async"
+            fetchPriority="high"
+            draggable={false}
+          />
+        </picture>
       </section>
     </main>
   );
 }
 
-function ScoreboardUnscoredStage({ team, topbar }) {
+function ScoreboardUnscoredStage({ team, topbar, orderLabel }) {
   return (
     <main className="scoreboard-page single-scoreboard-page">
-      <section className="single-scoreboard-shell scoreboard-empty-stage" aria-label={`${team.teamName} 等待评分`}>
+      <section className={`single-scoreboard-shell scoreboard-empty-stage${topbar ? " has-controller" : ""}`} aria-label={`${team.teamName} 等待评委打分中`}>
         {topbar}
         <div className="scoreboard-empty-copy" role="status">
-          <span className="scoreboard-empty-label">队伍名称 /</span>
-          <ScoreboardTeamName name={team.teamName} />
-          {team.registrationNumber ? <span className="scoreboard-empty-number">队伍编号：{team.registrationNumber}</span> : null}
-          {team.projectName ? <span>{team.projectName}</span> : null}
-          <span className="scoreboard-empty-status">等待评委评分</span>
+          <div className="scoreboard-empty-main">
+            <div className="scoreboard-empty-draw-order">
+              <span>抽签顺序</span>
+              <strong>{formatScoreboardDrawOrder(orderLabel)}</strong>
+            </div>
+            <div className="scoreboard-empty-team-panel">
+              <span className="scoreboard-empty-label">队伍名称 /</span>
+              <ScoreboardTeamName name={team.teamName} />
+              {team.registrationNumber ? <span className="scoreboard-empty-number">队伍编号：{team.registrationNumber}</span> : null}
+            </div>
+          </div>
+          <div className="scoreboard-empty-status-panel">
+            <span className="scoreboard-empty-status">等待评委打分中</span>
+          </div>
         </div>
       </section>
     </main>
@@ -287,7 +432,6 @@ function ScoreboardUnscoredStage({ team, topbar }) {
 }
 
 function ScoreboardSloganPage() {
-  const [controlToken] = useState(loadProjectionControlToken);
   const isLiveProjection = new URLSearchParams(window.location.search).get("live") === "1";
   const inFlightRef = useRef(false);
   const abortRef = useRef(null);
@@ -302,10 +446,9 @@ function ScoreboardSloganPage() {
       const controller = new AbortController();
       abortRef.current = controller;
       try {
-        const suffix = controlToken ? "?control=1" : "";
         const next = await requestApi(
-          `/api/scoreboard${suffix}`,
-          { signal: controller.signal, headers: authHeaders(controlToken) },
+          "/api/projection",
+          { signal: controller.signal },
           "成绩展示数据不可用",
         );
         if (!mounted || controller.signal.aborted) return;
@@ -327,7 +470,7 @@ function ScoreboardSloganPage() {
       window.clearInterval(timer);
       abortRef.current?.abort();
     };
-  }, [controlToken, isLiveProjection]);
+  }, [isLiveProjection]);
 
   return <ScoreboardSloganStage />;
 }
@@ -370,22 +513,436 @@ function ConnectionStatus({ status, className = "" }) {
   );
 }
 
+function rankRevealedScoreboardRows(rows) {
+  const uniqueRows = [...new Map(
+    (Array.isArray(rows) ? rows : []).filter((row) => row?.id).map((row) => [row.id, row]),
+  ).values()];
+  uniqueRows.sort((left, right) => {
+    const leftScore = left.scoreValue === null || left.scoreValue === undefined ? null : Number(left.scoreValue);
+    const rightScore = right.scoreValue === null || right.scoreValue === undefined ? null : Number(right.scoreValue);
+    if (leftScore === null && rightScore !== null) return 1;
+    if (rightScore === null && leftScore !== null) return -1;
+    if (leftScore !== null && rightScore !== null && rightScore !== leftScore) return rightScore - leftScore;
+    return (Number(left.appearanceOrder) || 0) - (Number(right.appearanceOrder) || 0) || left.id.localeCompare(right.id);
+  });
+  let previousScore = null;
+  let previousRank = 0;
+  return uniqueRows.map((row, index) => {
+    const scoreValue = row.scoreValue === null || row.scoreValue === undefined ? null : Number(row.scoreValue);
+    if (scoreValue === null) return { ...row, rank: null };
+    const rank = previousScore !== null && scoreValue === previousScore ? previousRank : index + 1;
+    previousScore = scoreValue;
+    previousRank = rank;
+    return { ...row, rank };
+  });
+}
+
+function getScoreboardRankingRowTranslation(rowOffset) {
+  const offset = Math.trunc(Number(rowOffset) || 0);
+  if (offset === 0) return "0px";
+  const steps = Array.from({ length: Math.abs(offset) }, () => "var(--ranking-row-step)");
+  return offset > 0
+    ? `calc(${steps.join(" + ")})`
+    : `calc(0px - ${steps.join(" - ")})`;
+}
+
+function getScoreboardRankingTransitionTiming(rankings, fromTeamId, suppliedDurationMs) {
+  const currentRowIndex = rankings.findIndex((team) => team.id === fromTeamId);
+  const movedRankCount = currentRowIndex < 0 ? 0 : Math.max(0, rankings.length - 1 - currentRowIndex);
+  const naturalTravelMs = movedRankCount * scoreboardRankingPerStepMs;
+  const naturalDurationMs = scoreboardRankingIntroMs + naturalTravelMs + scoreboardRankingHoldMs;
+  const parsedDurationMs = Number(suppliedDurationMs);
+  const durationMs = Number.isFinite(parsedDurationMs) && parsedDurationMs >= scoreboardRankingIntroMs + scoreboardRankingHoldMs
+    ? parsedDurationMs
+    : naturalDurationMs;
+  return {
+    currentRowIndex,
+    movedRankCount,
+    introMs: scoreboardRankingIntroMs,
+    travelMs: Math.max(0, durationMs - scoreboardRankingIntroMs - scoreboardRankingHoldMs),
+    holdMs: scoreboardRankingHoldMs,
+    durationMs,
+  };
+}
+
+function getScoreboardRankingTransitionDurationMs(rankings, fromTeamId) {
+  return getScoreboardRankingTransitionTiming(rankings, fromTeamId).durationMs;
+}
+
+function getScoreboardRankingColumnTranslation(columnOffset) {
+  const offset = Math.trunc(Number(columnOffset) || 0);
+  if (offset === 0) return "0px";
+  return offset > 0
+    ? "calc(100% + var(--ranking-column-gap))"
+    : "calc(0px - 100% - var(--ranking-column-gap))";
+}
+
+function getScoreboardRankingSlotTransform(slotOffset) {
+  return `translate(${getScoreboardRankingColumnTranslation(slotOffset.columnOffset)}, ${getScoreboardRankingRowTranslation(slotOffset.rowOffset)})`;
+}
+
+function getScoreboardRankingMotionKeyframes(animationName, motionFrames) {
+  if (motionFrames.length <= 1) return "";
+  const frames = motionFrames.map((frame) => {
+    const percentage = Number((frame.offset * 100).toFixed(4));
+    return `${percentage}% { transform: ${getScoreboardRankingSlotTransform(frame)}; opacity: ${frame.opacity}; }`;
+  });
+  return `@keyframes ${animationName} { ${frames.join(" ")} }`;
+}
+
+function getScoreboardRankingAnimationName(transitionKey, teamCount, finalIndex, columnCount) {
+  const safeTransitionKey = String(transitionKey || "transition").replace(/[^A-Za-z0-9_-]/g, "-").slice(-56);
+  return `scoreboard-ranking-current-${safeTransitionKey}-${teamCount}-${Math.max(0, finalIndex)}-${columnCount}`;
+}
+
+function ScoreboardRankingTransitionStage({ transition }) {
+  const rankings = transition?.rankings ?? [];
+  const timing = getScoreboardRankingTransitionTiming(rankings, transition?.fromTeamId, transition?.durationMs);
+  const { currentRowIndex, movedRankCount, introMs, travelMs, holdMs, durationMs } = timing;
+  const columnCount = getScoreboardRankingColumnCount(rankings.length);
+  const visualRowCount = getScoreboardRankingVisualRowCount(rankings.length, columnCount);
+  const isMultiColumn = columnCount > 1;
+  const currentAnimationName = getScoreboardRankingAnimationName(
+    transition?.key,
+    rankings.length,
+    currentRowIndex,
+    columnCount,
+  );
+  const currentMotionFrames = getScoreboardRankingMotionFrames(
+    rankings.length,
+    currentRowIndex,
+    columnCount,
+  );
+  const currentMotionKeyframes = getScoreboardRankingMotionKeyframes(currentAnimationName, currentMotionFrames);
+  const currentColumnHandoffCount = currentMotionFrames.filter((frame) => frame.phase === "column-handoff-out").length;
+  const elapsedMs = Math.max(0, Math.min(durationMs, Number(transition?.elapsedMs) || 0));
+  const awaitingTarget = transition?.source === "local" && transition?.phase === "awaiting-target";
+  const awaitingAdvance = transition?.phase === "awaiting-advance";
+  const visibleRowCount = Math.max(1, rankings.length);
+  const cameraAnchorIndex = Math.floor(visibleRowCount / 2);
+  const maximumCameraOffset = Math.max(0, rankings.length - visibleRowCount);
+  const startCameraOffset = currentRowIndex >= 0 ? maximumCameraOffset : 0;
+  const endCameraOffset = currentRowIndex >= 0
+    ? Math.min(maximumCameraOffset, Math.max(0, currentRowIndex - cameraAnchorIndex))
+    : 0;
+  const movementStepMs = movedRankCount > 0 ? travelMs / movedRankCount : 0;
+  const initialVisibleClimbSteps = Math.min(
+    movedRankCount,
+    Math.max(0, Math.min(visibleRowCount - 1, rankings.length - 1) - cameraAnchorIndex),
+  );
+  const cameraTravelSteps = Math.max(0, startCameraOffset - endCameraOffset);
+  const cameraDelayMs = initialVisibleClimbSteps * movementStepMs;
+  const cameraDurationMs = Math.max(1, cameraTravelSteps * movementStepMs);
+  return (
+    <main className="scoreboard-page single-scoreboard-page scoreboard-ranking-transition-page">
+      <section
+        className={`single-scoreboard-shell scoreboard-ranking-transition-stage${isMultiColumn ? " is-multi-column" : ""}`}
+        aria-label={`${getGroupLabel(transition?.groupId)}实时排名`}
+        role="status"
+        data-ranking-moved-positions={movedRankCount}
+        data-ranking-row-count={rankings.length}
+        data-ranking-visual-row-count={visualRowCount}
+        data-ranking-column-count={columnCount}
+        data-ranking-column-handoffs={currentColumnHandoffCount}
+        data-ranking-travel-ms={travelMs}
+        data-ranking-hold-ms={holdMs}
+        style={{
+          "--ranking-intro-duration": `${introMs}ms`,
+          "--ranking-travel-duration": `${travelMs}ms`,
+          "--ranking-delay": `-${elapsedMs}ms`,
+          "--ranking-row-count": visualRowCount,
+          "--ranking-column-count": columnCount,
+          "--ranking-row-height": getScoreboardRankingRowHeight(rankings.length, columnCount),
+          ...((awaitingTarget || awaitingAdvance) ? { animation: "none", opacity: 1 } : {}),
+        }}
+      >
+        {currentMotionKeyframes ? <style>{currentMotionKeyframes}</style> : null}
+        <header className="scoreboard-ranking-heading">
+          <div><span>成绩展示</span><h1>实时排名</h1></div>
+          <p>{getGroupLabel(transition?.groupId)}·已揭晓 {rankings.length} 支队伍</p>
+        </header>
+        <div className="scoreboard-ranking-window">
+          <ol
+            className="scoreboard-ranking-track"
+            style={{
+              "--ranking-camera-start-y": getScoreboardRankingRowTranslation(-startCameraOffset),
+              "--ranking-camera-end-y": getScoreboardRankingRowTranslation(-endCameraOffset),
+              "--ranking-camera-delay": `calc(var(--ranking-delay) + var(--ranking-intro-duration) + ${cameraDelayMs}ms)`,
+              "--ranking-camera-duration": `${cameraDurationMs}ms`,
+            }}
+          >
+            {rankings.map((team, index) => {
+              const isJustRevealed = team.id === transition?.fromTeamId;
+              const finalSlot = getScoreboardRankingSlot(index, rankings.length, columnCount);
+              const startSlotIndex = currentRowIndex < 0
+                ? index
+                : isJustRevealed
+                  ? rankings.length - 1
+                  : index > currentRowIndex ? index - 1 : index;
+              const startSlotOffset = getScoreboardRankingSlotOffset(startSlotIndex, index, rankings.length, columnCount);
+              const isDisplaced = !isJustRevealed && startSlotIndex !== index;
+              const isColumnTransfer = isDisplaced && startSlotOffset.columnOffset !== 0;
+              const crossedRankStep = isDisplaced ? rankings.length - index - 0.5 : 0;
+              const displacedDurationMs = movementStepMs;
+              const displacedStartMs = Math.max(
+                0,
+                crossedRankStep * movementStepMs - displacedDurationMs / 2,
+              );
+              const scoreState = team.scoreValue === null ? `已提交 ${team.submittedCount} 位` : team.isFinal ? "最终成绩" : "实时成绩";
+              return (
+                <li
+                  aria-current={isJustRevealed ? "true" : undefined}
+                  className={[
+                    isJustRevealed ? "is-just-revealed" : "",
+                    isDisplaced ? "is-ranking-displaced" : "",
+                    isColumnTransfer ? "is-ranking-column-transfer" : "",
+                  ].filter(Boolean).join(" ")}
+                  key={team.id}
+                  style={{
+                    gridColumn: finalSlot.column + 1,
+                    gridRow: finalSlot.row + 1,
+                    "--ranking-row-start-x": getScoreboardRankingColumnTranslation(startSlotOffset.columnOffset),
+                    "--ranking-row-start-y": getScoreboardRankingRowTranslation(startSlotOffset.rowOffset),
+                    ...(isJustRevealed && currentMotionKeyframes ? { "--ranking-current-animation-name": currentAnimationName } : {}),
+                    ...(isDisplaced ? {
+                      "--ranking-displaced-delay": `calc(var(--ranking-delay) + var(--ranking-intro-duration) + ${displacedStartMs}ms)`,
+                      "--ranking-displaced-duration": `${displacedDurationMs}ms`,
+                    } : {}),
+                  }}
+                >
+                  <span className="scoreboard-ranking-position">{team.scoreValue === null ? "--" : String(team.rank).padStart(2, "0")}</span>
+                  <span className="scoreboard-ranking-team">
+                    <span className="scoreboard-ranking-team-meta">
+                      <small>{team.registrationNumber || `第 ${team.appearanceOrder} 队`}</small>
+                      {isMultiColumn ? <span className="scoreboard-ranking-inline-state">{scoreState}</span> : null}
+                    </span>
+                    <span className="scoreboard-ranking-team-title">
+                      {isJustRevealed ? <b className="scoreboard-ranking-current-badge">当前队伍</b> : null}
+                      <strong>{team.teamName}</strong>
+                    </span>
+                  </span>
+                  {isMultiColumn ? null : <span className={`scoreboard-ranking-state${isJustRevealed ? " is-current-team" : ""}`}>{scoreState}</span>}
+                  <strong className="scoreboard-ranking-score">{team.score}</strong>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+        <footer className={`scoreboard-ranking-footer${awaitingAdvance ? " is-awaiting-advance" : ""}`}>
+          <span>{awaitingAdvance ? "实时排名已更新" : "当前队伍正滑入最终名次"}</span>
+          {awaitingAdvance ? null : <strong>动画完成后手动切换</strong>}
+        </footer>
+      </section>
+    </main>
+  );
+}
+
 function ScoreboardPage() {
-  const [payload, setPayload] = useState(null);
-  const [requestedTeamId, setRequestedTeamId] = useState(() => new URLSearchParams(window.location.search).get("teamId") || "");
   const isLiveProjection = new URLSearchParams(window.location.search).get("live") === "1";
+  const [payload, setPayload] = useState(null);
+  const [requestedTeamId, setRequestedTeamId] = useState(() => isLiveProjection ? "" : new URLSearchParams(window.location.search).get("teamId") || "");
   const [isTeamMenuOpen, setIsTeamMenuOpen] = useState(false);
   const [controlToken] = useState(loadProjectionControlToken);
   const [menuGroupId, setMenuGroupId] = useState("");
+  const [rankingTransition, setRankingTransition] = useState(null);
   const payloadRef = useRef(null);
   const inFlightRef = useRef(false);
   const abortRef = useRef(null);
   const selectedTeamOptionRef = useRef(null);
   const requestedTeamIdRef = useRef(requestedTeamId);
+  const rankingTransitionRef = useRef(null);
+  const rankingTransitionTimerRef = useRef(null);
+  const rankingAdvanceInFlightRef = useRef(false);
+  const teamAdvanceInFlightRef = useRef(false);
+  const completedServerTransitionRevisionRef = useRef(0);
+  const localRevealedRankingsByGroupRef = useRef(new Map());
+  const localRevealedRevisionByGroupRef = useRef(new Map());
 
   useEffect(() => {
     requestedTeamIdRef.current = requestedTeamId;
   }, [requestedTeamId]);
+
+  function restartScoreboardRefresh() {
+    const previousController = abortRef.current;
+    if (previousController) {
+      previousController.abort();
+      if (abortRef.current === previousController) abortRef.current = null;
+    }
+    inFlightRef.current = false;
+    void refresh();
+  }
+
+  function commitTeamSelection(teamId, { refreshNow = true } = {}) {
+    const nextTeamId = teamId || "";
+    requestedTeamIdRef.current = nextTeamId;
+    setRequestedTeamId(nextTeamId);
+    setIsTeamMenuOpen(false);
+    const nextUrl = new URL(window.location.href);
+    if (nextTeamId) nextUrl.searchParams.set("teamId", nextTeamId);
+    else nextUrl.searchParams.delete("teamId");
+    window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+    if (refreshNow) restartScoreboardRefresh();
+  }
+
+  function clearRankingTransition(activeTransition = rankingTransitionRef.current) {
+    if (!activeTransition || rankingTransitionRef.current?.key !== activeTransition.key) return;
+    if (activeTransition.source === "server") {
+      completedServerTransitionRevisionRef.current = Math.max(
+        completedServerTransitionRevisionRef.current,
+        Number(activeTransition.transitionRevision) || 0,
+      );
+    }
+    rankingTransitionRef.current = null;
+    setRankingTransition(null);
+  }
+
+  async function advanceServerRankingTransition(activeTransition = rankingTransitionRef.current) {
+    if (
+      !activeTransition ||
+      activeTransition.source !== "server" ||
+      activeTransition.phase !== "awaiting-advance" ||
+      rankingAdvanceInFlightRef.current
+    ) return;
+    rankingAdvanceInFlightRef.current = true;
+    try {
+      await requestApi(
+        "/api/projection/advance",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transitionRevision: activeTransition.transitionRevision }),
+        },
+        "大屏排名继续失败",
+      );
+      clearRankingTransition(activeTransition);
+      restartScoreboardRefresh();
+    } catch {
+      restartScoreboardRefresh();
+    } finally {
+      rankingAdvanceInFlightRef.current = false;
+    }
+  }
+
+  async function moveServerDisplayTeam(direction) {
+    if (teamAdvanceInFlightRef.current || rankingTransitionRef.current) return;
+    const currentPayload = payloadRef.current;
+    const displayRevision = Number(currentPayload?.displaySelection?.displayRevision);
+    if (!currentPayload?.displayTeam || !Number.isSafeInteger(displayRevision) || displayRevision < 0) return;
+    const isPrevious = direction === "previous";
+    teamAdvanceInFlightRef.current = true;
+    try {
+      await requestApi(
+        isPrevious ? "/api/projection/previous" : "/api/projection/next",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ displayRevision }),
+        },
+        isPrevious ? "大屏切换上一队失败" : "大屏切换下一队失败",
+      );
+    } catch {
+      // A second display may have advanced the shared revision first.
+    } finally {
+      teamAdvanceInFlightRef.current = false;
+      restartScoreboardRefresh();
+    }
+  }
+
+  function loadLocalTransitionTarget(activeTransition = rankingTransitionRef.current) {
+    if (
+      !activeTransition ||
+      activeTransition.source !== "local" ||
+      !activeTransition.targetTeamId ||
+      rankingTransitionRef.current?.key !== activeTransition.key ||
+      activeTransition.phase === "awaiting-target"
+    ) return;
+    const awaitingTarget = {
+      ...activeTransition,
+      phase: "awaiting-target",
+      elapsedMs: activeTransition.durationMs,
+      remainingMs: scoreboardRankingTargetLoadTimeoutMs,
+    };
+    rankingTransitionRef.current = awaitingTarget;
+    setRankingTransition(awaitingTarget);
+    commitTeamSelection(activeTransition.targetTeamId);
+  }
+
+  function holdRankingTransitionForAdvance(activeTransition = rankingTransitionRef.current) {
+    if (
+      !activeTransition ||
+      rankingTransitionRef.current?.key !== activeTransition.key ||
+      activeTransition.phase === "awaiting-advance" ||
+      activeTransition.phase === "awaiting-target"
+    ) return;
+    const awaitingAdvance = {
+      ...activeTransition,
+      phase: "awaiting-advance",
+      elapsedMs: activeTransition.durationMs,
+      remainingMs: 0,
+    };
+    rankingTransitionRef.current = awaitingAdvance;
+    setRankingTransition(awaitingAdvance);
+  }
+
+  function beginRankingTransition(nextTransition) {
+    window.clearTimeout(rankingTransitionTimerRef.current);
+    rankingTransitionRef.current = nextTransition;
+    setRankingTransition(nextTransition);
+  }
+
+  function stageServerRankingTransition(next) {
+    const transition = next?.rankingTransition;
+    const transitionRevision = Number(transition?.transitionRevision) || 0;
+    const startedAtMs = Date.parse(transition?.startedAt ?? "");
+    const serverNowMs = Date.parse(next?.serverTime ?? "");
+    const durationMs = getScoreboardRankingTransitionTiming(
+      transition?.rankings ?? [],
+      transition?.fromTeamId,
+      transition?.durationMs,
+    ).durationMs;
+    const elapsedMs = Math.max(0, Math.min(durationMs, (Number.isFinite(serverNowMs) ? serverNowMs : Date.now()) - startedAtMs));
+    const key = `server-${transitionRevision}`;
+    if (
+      !isLiveProjection ||
+      !transition ||
+      !transition.rankings?.length ||
+      !Number.isFinite(startedAtMs) ||
+      transitionRevision <= completedServerTransitionRevisionRef.current
+    ) return false;
+    if (rankingTransitionRef.current?.key === key) {
+      const refreshed = { ...rankingTransitionRef.current, rankings: transition.rankings };
+      rankingTransitionRef.current = refreshed;
+      setRankingTransition(refreshed);
+      return true;
+    }
+    beginRankingTransition({
+      ...transition,
+      key,
+      source: "server",
+      phase: elapsedMs >= durationMs ? "awaiting-advance" : "playing",
+      elapsedMs: Math.max(0, elapsedMs),
+      remainingMs: Math.max(0, durationMs - elapsedMs),
+    });
+    return true;
+  }
+
+  useEffect(() => {
+    window.clearTimeout(rankingTransitionTimerRef.current);
+    if (!rankingTransition) return undefined;
+    if (rankingTransition.source === "local" && rankingTransition.phase === "awaiting-target") {
+      rankingTransitionTimerRef.current = window.setTimeout(
+        () => clearRankingTransition(rankingTransition),
+        scoreboardRankingTargetLoadTimeoutMs,
+      );
+      return () => window.clearTimeout(rankingTransitionTimerRef.current);
+    }
+    if (rankingTransition.phase === "awaiting-advance") return undefined;
+    rankingTransitionTimerRef.current = window.setTimeout(
+      () => holdRankingTransitionForAdvance(rankingTransition),
+      Math.max(0, rankingTransition.remainingMs),
+    );
+    return () => window.clearTimeout(rankingTransitionTimerRef.current);
+  }, [rankingTransition?.key, rankingTransition?.phase]);
 
   useEffect(() => {
     if (!isTeamMenuOpen) return;
@@ -401,16 +958,21 @@ function ScoreboardPage() {
     inFlightRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
-    const requestTeamId = requestedTeamId;
+    const requestTeamId = requestedTeamIdRef.current;
     try {
       const query = new URLSearchParams();
-      if (controlToken) query.set("control", "1");
-      if (controlToken && requestTeamId) query.set("teamId", requestTeamId);
+      if (!isLiveProjection && controlToken) query.set("control", "1");
+      if (!isLiveProjection && controlToken && requestTeamId) query.set("teamId", requestTeamId);
       const suffix = query.size ? `?${query.toString()}` : "";
-      const next = await requestApi(`/api/scoreboard${suffix}`, { signal: controller.signal, headers: authHeaders(controlToken) }, "成绩展示数据不可用");
+      const endpoint = isLiveProjection ? "/api/projection" : `/api/scoreboard${suffix}`;
+      const next = await requestApi(
+        endpoint,
+        { signal: controller.signal, headers: authHeaders(isLiveProjection ? "" : controlToken) },
+        "成绩展示数据不可用",
+      );
       if (requestTeamId !== requestedTeamIdRef.current) return;
       if (isLiveProjection) {
-        const nextRoute = getScoreboardRoute(next.displaySelection?.publicationStatus);
+        const nextRoute = getControlledProjectionRoute(next.displaySelection);
         if (nextRoute !== SCOREBOARD_RESULTS_PATH) {
           replaceScoreboardRoute(nextRoute, { live: true });
           return;
@@ -420,13 +982,76 @@ function ScoreboardPage() {
         replaceScoreboardRoute(SCOREBOARD_SLOGAN_PATH, { live: isLiveProjection });
         return;
       }
+      if (isLiveProjection && next.controller && next.selectedTeam?.groupId) {
+        const groupId = next.selectedTeam.groupId;
+        const groupOptions = (next.teamOptions ?? []).filter((team) => team.groupId === groupId);
+        const optionsById = new Map(groupOptions.map((team) => [team.id, team]));
+        const validTeamIds = new Set(optionsById.keys());
+        const serverRows = rankRevealedScoreboardRows(
+          (next.rankingSnapshot ?? []).filter((row) => validTeamIds.has(row.id)),
+        );
+        const serverTeamIds = new Set(serverRows.map((row) => row.id));
+        const displayRevision = Number(next.displaySelection?.displayRevision) || 0;
+        const previousRevision = localRevealedRevisionByGroupRef.current.get(groupId);
+        const displayRevisionChanged = previousRevision !== undefined && previousRevision !== displayRevision;
+        const previousRows = localRevealedRankingsByGroupRef.current.get(groupId) ?? [];
+        const retainedLocalRows = previousRows.filter((row) => {
+          const option = optionsById.get(row.id);
+          if (!option || option.submittedCount < 1 || option.submittedCount !== row.submittedCount) return false;
+          if (!displayRevisionChanged) return true;
+          return serverTeamIds.has(row.id) || row.id === next.selectedTeam.id;
+        });
+        localRevealedRankingsByGroupRef.current.set(
+          groupId,
+          rankRevealedScoreboardRows([...retainedLocalRows, ...serverRows]),
+        );
+        localRevealedRevisionByGroupRef.current.set(groupId, displayRevision);
+      }
       payloadRef.current = next;
       setPayload(next);
+      const activeLocalTransition = rankingTransitionRef.current?.source === "local"
+        ? rankingTransitionRef.current
+        : null;
+      if (activeLocalTransition?.phase === "awaiting-target") {
+        if (
+          next.selectedTeamId === activeLocalTransition.targetTeamId ||
+          next.displayTeam?.id === activeLocalTransition.targetTeamId
+        ) clearRankingTransition(activeLocalTransition);
+      } else if (activeLocalTransition?.phase === "awaiting-advance") {
+        const refreshedTransition = {
+          ...activeLocalTransition,
+          rankings: localRevealedRankingsByGroupRef.current.get(activeLocalTransition.groupId) ?? activeLocalTransition.rankings,
+        };
+        rankingTransitionRef.current = refreshedTransition;
+        setRankingTransition(refreshedTransition);
+      } else if (activeLocalTransition) {
+        const refreshedRankings = localRevealedRankingsByGroupRef.current.get(activeLocalTransition.groupId) ?? [];
+        const fromTeam = refreshedRankings.find((row) => row.id === activeLocalTransition.fromTeamId);
+        if (
+          next.displaySelection?.rankingAnimationEnabled !== true ||
+          next.displayTeam?.id !== activeLocalTransition.fromTeamId ||
+          next.displaySummary?.submittedCount < 1 ||
+          !fromTeam ||
+          fromTeam.submittedCount < 1
+        ) {
+          loadLocalTransitionTarget(activeLocalTransition);
+        } else {
+          const refreshedTransition = { ...activeLocalTransition, rankings: refreshedRankings };
+          rankingTransitionRef.current = refreshedTransition;
+          setRankingTransition(refreshedTransition);
+        }
+      }
+      const stagedServerTransition = stageServerRankingTransition(next);
+      if (!stagedServerTransition && rankingTransitionRef.current?.source === "server") {
+        clearRankingTransition(rankingTransitionRef.current);
+      }
     } catch (error) {
       if (error.name === "AbortError") return;
     } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      inFlightRef.current = false;
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        inFlightRef.current = false;
+      }
     }
   }
 
@@ -434,18 +1059,33 @@ function ScoreboardPage() {
     refresh();
     const timer = window.setInterval(refresh, isLiveProjection ? scoreboardNavigationPollMs : scoreboardDataPollMs);
     const onPopState = () => {
-      const nextTeamId = new URLSearchParams(window.location.search).get("teamId") || "";
+      const nextTeamId = isLiveProjection ? "" : new URLSearchParams(window.location.search).get("teamId") || "";
       requestedTeamIdRef.current = nextTeamId;
       setRequestedTeamId(nextTeamId);
       setIsTeamMenuOpen(false);
+      restartScoreboardRefresh();
     };
     const onKeyDown = (event) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.repeat) return;
       if (event.key === "Escape") {
         setIsTeamMenuOpen(false);
         return;
       }
       if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
       if (event.target instanceof Element && ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName)) return;
+      const activeTransition = rankingTransitionRef.current;
+      if (activeTransition) {
+        if (event.key !== "ArrowRight" || activeTransition.phase !== "awaiting-advance") return;
+        event.preventDefault();
+        if (activeTransition.source === "local") loadLocalTransitionTarget(activeTransition);
+        else void advanceServerRankingTransition(activeTransition);
+        return;
+      }
+      if (isLiveProjection) {
+        event.preventDefault();
+        void moveServerDisplayTeam(event.key === "ArrowLeft" ? "previous" : "next");
+        return;
+      }
       const nextPayload = payloadRef.current;
       const options = nextPayload?.teamOptions ?? [];
       const current = nextPayload?.selectedTeam;
@@ -465,17 +1105,46 @@ function ScoreboardPage() {
       window.removeEventListener("popstate", onPopState);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [isLiveProjection, requestedTeamId]);
+  }, [controlToken, isLiveProjection]);
 
   function selectTeam(teamId) {
+    if (isLiveProjection) return;
     const nextTeamId = teamId || "";
-    requestedTeamIdRef.current = nextTeamId;
-    setRequestedTeamId(nextTeamId);
-    setIsTeamMenuOpen(false);
-    const nextUrl = new URL(window.location.href);
-    if (nextTeamId) nextUrl.searchParams.set("teamId", nextTeamId);
-    else nextUrl.searchParams.delete("teamId");
-    window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+    const currentPayload = payloadRef.current;
+    const currentTeam = currentPayload?.displayTeam;
+    const currentSummary = currentPayload?.displaySummary;
+    const rankingSnapshot = rankRevealedScoreboardRows(
+      localRevealedRankingsByGroupRef.current.get(currentTeam?.groupId) ?? currentPayload?.rankingSnapshot ?? [],
+    );
+    if (rankingTransitionRef.current || nextTeamId === currentTeam?.id) {
+      setIsTeamMenuOpen(false);
+      return;
+    }
+    if (
+      isLiveProjection &&
+      currentPayload?.displaySelection?.rankingAnimationEnabled === true &&
+      currentTeam?.id &&
+      nextTeamId &&
+      currentSummary?.submittedCount > 0 &&
+      rankingSnapshot.length > 0
+    ) {
+      const durationMs = getScoreboardRankingTransitionDurationMs(rankingSnapshot, currentTeam.id);
+      setIsTeamMenuOpen(false);
+      beginRankingTransition({
+        key: `local-${currentTeam.id}-${nextTeamId}-${Date.now()}`,
+        source: "local",
+        phase: "playing",
+        groupId: currentTeam.groupId,
+        fromTeamId: currentTeam.id,
+        targetTeamId: nextTeamId,
+        rankings: rankingSnapshot,
+        durationMs,
+        elapsedMs: 0,
+        remainingMs: durationMs,
+      });
+      return;
+    }
+    commitTeamSelection(nextTeamId);
   }
 
   const team = payload?.displayTeam;
@@ -487,76 +1156,48 @@ function ScoreboardPage() {
     ? menuGroupId
     : selectedTeam?.groupId ?? availableMenuGroups[0]?.id ?? "";
   const menuOptions = options.filter((option) => option.groupId === activeMenuGroupId);
-  const currentGroupOptions = selectedTeam ? options.filter((item) => item.groupId === selectedTeam.groupId) : [];
-  const currentIndex = selectedTeam ? currentGroupOptions.findIndex((item) => item.id === selectedTeam.id) : -1;
-  const previousTeam = currentIndex > 0 ? currentGroupOptions[currentIndex - 1] : null;
-  const nextTeam = currentIndex >= 0 && currentIndex < currentGroupOptions.length - 1 ? currentGroupOptions[currentIndex + 1] : null;
-  const topbar = payload?.controller ? (
-    <div className="single-scoreboard-topbar">
-      <div className="single-scoreboard-toolbar" aria-label="成绩展示控制">
-        <button className="single-scoreboard-nav-button" type="button" disabled={!previousTeam} onClick={() => selectTeam(previousTeam?.id)} aria-label={previousTeam ? `上一队 ${previousTeam.teamName}` : "没有上一队"}>
-          <ArrowLeft size={16} aria-hidden="true" />上一队
-        </button>
-        <button className="single-scoreboard-current-button" type="button" aria-expanded={isTeamMenuOpen} aria-controls="scoreboard-team-menu" onClick={() => {
-          if (!isTeamMenuOpen) setMenuGroupId(selectedTeam?.groupId ?? availableMenuGroups[0]?.id ?? "");
-          setIsTeamMenuOpen((open) => !open);
-        }}>
-          <span className="single-scoreboard-current-order">{selectedTeam?.orderLabel ?? "选择队伍"}</span>
-          <ChevronDown size={15} aria-hidden="true" />
-        </button>
-        <button className="single-scoreboard-nav-button" type="button" disabled={!nextTeam} onClick={() => selectTeam(nextTeam?.id)} aria-label={nextTeam ? `下一队 ${nextTeam.teamName}` : "没有下一队"}>
-          下一队<ArrowRight size={16} aria-hidden="true" />
-        </button>
-        {isTeamMenuOpen ? (
-          <div className="single-scoreboard-team-menu" id="scoreboard-team-menu">
-            <div className="single-scoreboard-group-switcher" aria-label="选择队伍分组">
-              {availableMenuGroups.map((group) => (
-                <button type="button" aria-pressed={group.id === activeMenuGroupId} key={group.id} onClick={() => setMenuGroupId(group.id)}>{group.label}</button>
-              ))}
-            </div>
-            <div className="single-scoreboard-team-options" role="listbox" aria-label={`${getGroupLabel(activeMenuGroupId)}成绩展示队伍`}>
-              {menuOptions.map((option) => (
-                <button className="single-scoreboard-team-option" type="button" role="option" aria-selected={option.id === selectedTeam?.id} key={option.id} ref={option.id === selectedTeam?.id ? selectedTeamOptionRef : undefined} onClick={() => selectTeam(option.id)}>
-                  <span className="single-scoreboard-team-code"><strong>{option.orderLabel}</strong><small>{option.groupLabel}</small></span>
-                  <span className="single-scoreboard-team-name"><strong>{option.teamName}</strong><small>{option.projectName || "未填写项目名称"}</small></span>
-                  <span className="single-scoreboard-team-status">{option.statusLabel}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  ) : null;
+  const topbar = null;
+  if (rankingTransition) return <ScoreboardRankingTransitionStage transition={rankingTransition} />;
   if (!team || !summary) return <ScoreboardSloganStage />;
-  if (summary.submittedCount === 0) return <ScoreboardUnscoredStage team={team} topbar={topbar} />;
-  const scores = shuffledScores(summary.anonymousScores, team.id);
+  if (summary.submittedCount === 0) return <ScoreboardUnscoredStage team={team} topbar={topbar} orderLabel={selectedTeam?.orderLabel} />;
+  const scores = summary.anonymousScores ?? [];
   const judgeLayout = getScoreboardJudgeLayout(scores.length);
   const teamNameText = String(team.teamName ?? "");
   const isLongTeamName = teamNameText.length >= 12;
   return (
     <main className="scoreboard-page single-scoreboard-page">
-      <section className={`single-scoreboard-shell${isLongTeamName ? " is-long-name" : ""}`} aria-label={`${team.teamName} 成绩展示`}>
+      <section className={`single-scoreboard-shell${isLongTeamName ? " is-long-name" : ""}${topbar ? " has-controller" : ""}`} aria-label={`${team.teamName} 成绩展示`}>
         {topbar}
         <div className="single-scoreboard-main">
           <section className="single-scoreboard-judge-stage" aria-label="匿名评委评分">
             <div className={`single-scoreboard-judges is-${judgeLayout.density}`} data-judge-count={judgeLayout.count} style={{ "--judge-columns": judgeLayout.columns }}>
               {scores.map((item, index) => (
-                <div className={item.submitted ? "single-score-card is-submitted" : "single-score-card is-pending"} key={`${team.id}-${item.sourceIndex}`} style={{ "--score-delay": `${index * 90}ms` }}>
+                <div className={item.submitted ? "single-score-card is-submitted" : "single-score-card is-pending"} key={`${team.id}-${index}`} style={{ "--score-delay": `${index * 90}ms` }}>
                   <span>评委{index + 1}</span>
                   <strong>{item.score}</strong>
                 </div>
               ))}
             </div>
           </section>
-        <section className="single-scoreboard-copy single-scoreboard-identity">
-            <span className="single-scoreboard-identity-label">队伍名称 /</span>
-            <ScoreboardTeamName name={team.teamName} />
-            {team.registrationNumber ? <p className="single-scoreboard-team-number">队伍编号：{team.registrationNumber}</p> : null}
-            {team.projectName ? <p className="single-scoreboard-product">{team.projectName}</p> : null}
+          <section className="single-scoreboard-copy single-scoreboard-identity">
+            <div className="single-scoreboard-draw-order">
+              <span>抽签顺序</span>
+              <strong>{formatScoreboardDrawOrder(selectedTeam?.orderLabel)}</strong>
+            </div>
+            <div className="single-scoreboard-identity-panel">
+              <span className="single-scoreboard-identity-label">队伍名称 /</span>
+              <ScoreboardTeamName name={team.teamName} />
+              {team.registrationNumber ? <p className="single-scoreboard-team-number">队伍编号：{team.registrationNumber}</p> : null}
+              {team.projectName ? <p className="single-scoreboard-product">{team.projectName}</p> : null}
+            </div>
           </section>
-          <aside className="single-scoreboard-context" aria-label="队伍总分">
-            <span className="single-scoreboard-total-label">队伍总分</span>
+          <aside
+            className="single-scoreboard-context is-final-result"
+            aria-label="最终得分"
+          >
+            <div className="single-scoreboard-result-heading">
+              <span className="single-scoreboard-total-label">最终得分</span>
+            </div>
             <div className="single-scoreboard-score-value"><strong>{summary.display}</strong></div>
           </aside>
           <div className="single-scoreboard-extremes">
@@ -569,12 +1210,150 @@ function ScoreboardPage() {
   );
 }
 
+const scoreboardDemoTeams = [
+  {
+    drawOrder: "01",
+    registrationNumber: "ST-0022",
+    teamName: "跨境电商综合试验区全链路AI赋能公共服务平台建设项目团队",
+    projectName: "跨境电商综合试验区全链路AI赋能公共服务平台建设项目",
+    total: "88.47",
+    scores: ["89.00", "87.08", "88.00", "89.48", "87.55", "88.51", "89.28"],
+    additionalScores: ["88.47", "88.47"],
+    high: "89.48",
+    low: "87.08",
+  },
+  {
+    drawOrder: "02",
+    registrationNumber: "ST-0017",
+    teamName: "数智融通东盟跨境电商创新团队",
+    projectName: "AI驱动的跨境供应链协同服务平台",
+    total: "87.96",
+    scores: ["88.20", "86.75", "87.90", "89.10", "87.32", "88.63", "87.75"],
+    additionalScores: ["87.96", "87.96"],
+    high: "89.10",
+    low: "86.75",
+  },
+  {
+    drawOrder: "03",
+    registrationNumber: "ST-0009",
+    teamName: "Flyelep飞象全球电商内容智能体",
+    projectName: "面向东盟市场的多语种商品内容智能生成平台",
+    total: "90.12",
+    scores: ["90.20", "89.65", "91.10", "89.88", "90.36", "90.51", "89.76"],
+    additionalScores: ["90.06", "90.07"],
+    high: "91.10",
+    low: "89.65",
+  },
+];
+
+function ScoreboardDemoPage({ variant = "light" }) {
+  const [activeTeamIndex, setActiveTeamIndex] = useState(0);
+  const team = scoreboardDemoTeams[activeTeamIndex];
+  const isTechNineJudges = variant === "tech-nine-judges";
+  const isTechTotalExtremesGrouped = variant === "tech-total-extremes-grouped";
+  const demoScores = isTechNineJudges ? [...team.scores, ...team.additionalScores] : team.scores;
+  const variantClass = variant === "clean"
+    ? " is-clean"
+    : variant === "tech"
+      ? " is-tech"
+      : variant === "tech-backup"
+        ? " is-tech-backup"
+        : isTechNineJudges
+          ? " is-tech is-tech-nine-judges"
+          : isTechTotalExtremesGrouped
+            ? " is-tech is-tech-grouped"
+            : variant === "premium"
+              ? " is-premium"
+              : "";
+  const variantLabel = variant === "clean"
+    ? "无背景图片"
+    : variant === "tech"
+      ? "机器人科技背景"
+      : variant === "tech-backup"
+        ? "机器人科技背景备份"
+        : isTechNineJudges
+          ? "九评委机器人科技背景"
+          : isTechTotalExtremesGrouped
+            ? "总成绩与剔除分数组合展示"
+            : variant === "premium"
+              ? "深空科技配色"
+              : "淡蓝主题";
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof Element && (event.target.matches("input, select, textarea, button") || event.target.isContentEditable)) return;
+      event.preventDefault();
+      setActiveTeamIndex((index) => Math.max(0, Math.min(scoreboardDemoTeams.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))));
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  return (
+    <main className={`scoreboard-demo-page${variantClass}`}>
+      <section className={`scoreboard-demo-stage${variantClass}`} aria-label={`${team.teamName} ${variantLabel}成绩展示 demo`}>
+        <section className="scoreboard-demo-identity" aria-label="队伍信息">
+          <div className="scoreboard-demo-draw-order">
+            <span>抽签顺序</span>
+            <strong>{team.drawOrder}</strong>
+          </div>
+          <div className="scoreboard-demo-team-copy">
+            <span className="scoreboard-demo-eyebrow">队伍名称 /</span>
+            <ScoreboardTeamName name={team.teamName} />
+            <p className="scoreboard-demo-team-number">队伍编号：{team.registrationNumber}</p>
+            <p>{team.projectName}</p>
+          </div>
+        </section>
+
+        {isTechTotalExtremesGrouped ? null : (
+          <aside className="scoreboard-demo-total" aria-label="队伍总分">
+            {(variant === "tech" || isTechNineJudges) ? <span>总成绩</span> : null}
+            <strong>{team.total}</strong>
+          </aside>
+        )}
+
+        <section className="scoreboard-demo-judges" aria-label="匿名评委评分">
+          {demoScores.map((score, index) => (
+            <div key={`${team.drawOrder}-${index}`} style={{ "--score-delay": `${index * 70}ms` }}>
+              <span>评委{index + 1}</span>
+              <strong>{score}</strong>
+            </div>
+          ))}
+        </section>
+
+        {isTechTotalExtremesGrouped ? (
+          <section className="scoreboard-demo-summary-grouped" aria-label="总成绩与剔除分数">
+            <div className="is-total"><span>总成绩</span><strong>{team.total}</strong></div>
+            <div className="is-high"><span>去掉最高分</span><strong>{team.high}</strong></div>
+            <div className="is-low"><span>去掉最低分</span><strong>{team.low}</strong></div>
+          </section>
+        ) : (
+          <section className="scoreboard-demo-extremes" aria-label="剔除分数">
+            {(variant === "tech" || isTechNineJudges) ? null : (
+              <div className="scoreboard-demo-extremes-title">
+                <span>综合评分计算</span>
+                <strong>剔除分数</strong>
+              </div>
+            )}
+            <div className="is-high"><span>去掉最高分</span><strong>{team.high}</strong></div>
+            <div className="is-low"><span>去掉最低分</span><strong>{team.low}</strong></div>
+          </section>
+        )}
+      </section>
+    </main>
+  );
+}
+
 function RankingsPage() {
   const [payload, setPayload] = useState(null);
   const [loadError, setLoadError] = useState("");
   const [selectedGroupId, setSelectedGroupId] = useState(() => new URLSearchParams(window.location.search).get("groupId") || "");
   const [controlToken] = useState(loadProjectionControlToken);
+  const isLiveProjection = new URLSearchParams(window.location.search).get("live") === "1";
   const inFlightRef = useRef(false);
+  const abortRef = useRef(null);
+  const payloadRef = useRef(null);
   const selectedGroupIdRef = useRef(selectedGroupId);
 
   useEffect(() => {
@@ -584,11 +1363,39 @@ function RankingsPage() {
   async function refresh() {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
     const requestGroupId = selectedGroupIdRef.current;
     try {
-      const query = requestGroupId ? `?groupId=${encodeURIComponent(requestGroupId)}` : "";
-      const next = await requestApi(`/api/rankings${query}`, { headers: authHeaders(controlToken) }, "队伍排名数据不可用");
+      let next;
+      if (isLiveProjection) {
+        const projection = await requestApi(
+          "/api/projection",
+          { signal: controller.signal },
+          "大屏控制状态不可用",
+        );
+        const nextRoute = getControlledProjectionRoute(projection.displaySelection);
+        if (!nextRoute.startsWith("/rankings")) {
+          replaceScoreboardRoute(nextRoute, { live: true });
+          return;
+        }
+        const desiredGroupId = new URL(nextRoute, window.location.origin).searchParams.get("groupId") || "";
+        if (desiredGroupId && desiredGroupId !== selectedGroupIdRef.current) {
+          replaceScoreboardRoute(nextRoute, { live: true });
+          return;
+        }
+        next = projection.ranking;
+        if (!next) throw createApiError("队伍排名数据不可用");
+      } else {
+        const query = requestGroupId ? `?groupId=${encodeURIComponent(requestGroupId)}` : "";
+        next = await requestApi(
+          `/api/rankings${query}`,
+          { signal: controller.signal, headers: authHeaders(controlToken) },
+          "队伍排名数据不可用",
+        );
+      }
       if (requestGroupId !== selectedGroupIdRef.current) return;
+      payloadRef.current = next;
       setPayload(next);
       setLoadError("");
       if (!requestGroupId && next.selectedGroupId) {
@@ -596,17 +1403,30 @@ function RankingsPage() {
         setSelectedGroupId(next.selectedGroupId);
       }
     } catch (error) {
-      if (!payload && error.name !== "AbortError") setLoadError(error.message || "队伍排名数据不可用");
+      if (!payloadRef.current && error.name !== "AbortError") setLoadError(error.message || "队伍排名数据不可用");
     } finally {
-      inFlightRef.current = false;
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        inFlightRef.current = false;
+      }
     }
   }
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, 3000);
-    return () => window.clearInterval(timer);
-  }, [selectedGroupId]);
+    const timer = window.setInterval(refresh, isLiveProjection ? scoreboardNavigationPollMs : 3000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("pageshow", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      abortRef.current?.abort();
+      window.removeEventListener("pageshow", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [controlToken, isLiveProjection, selectedGroupId]);
 
   function selectGroup(groupId) {
     selectedGroupIdRef.current = groupId;
@@ -617,34 +1437,69 @@ function RankingsPage() {
   }
 
   const rankings = payload?.rankings ?? [];
-  const groups = payload?.groups ?? contestGroups.map((group) => ({ id: group.id, label: group.label, active: group.id === selectedGroupId }));
+  const selectedGroupLabel = payload?.selectedGroupLabel ?? getGroupLabel(selectedGroupId);
+  const rankingTitle = payload?.rankingTitle ?? `${selectedGroupLabel}排名`;
+  const rankingScopeLabel = payload?.rankingScopeLabel ?? "比赛排名";
+  const useTwoColumns = rankings.length > 10;
+  const rankingColumns = getOverallRankingColumns(rankings);
 
   return (
     <main className="rankings-page">
-      <section className="rankings-shell" aria-label="队伍总排名">
+      <section
+        className="rankings-shell"
+        aria-label="队伍总排名"
+        style={{
+          "--rankings-row-count": getOverallRankingRowSlotCount(rankings.length, useTwoColumns),
+          "--rankings-row-height": getOverallRankingRowHeight(rankings.length, useTwoColumns),
+        }}
+      >
         <header className="rankings-header">
-          <div><span>决赛成绩总览</span><h1>{payload?.selectedGroupLabel ?? getGroupLabel(selectedGroupId)}队伍排名</h1></div>
-          <nav className="rankings-group-tabs" aria-label="选择组别">
-            {groups.map((group) => <button type="button" key={group.id} className={group.id === selectedGroupId ? "is-selected" : ""} onClick={() => selectGroup(group.id)}>{group.label}</button>)}
-          </nav>
+          <div className="rankings-title-block">
+            <span className="rankings-kicker">{rankingScopeLabel}</span>
+            <div className="rankings-title-line">
+              <h1>{rankingTitle}</h1>
+              {payload ? <span className="rankings-team-count">共 {rankings.length} 支队伍</span> : null}
+            </div>
+          </div>
         </header>
-        <div className="rankings-table" role="table" aria-label={`${payload?.selectedGroupLabel ?? ""}队伍排名和分数`}>
-          <div className="rankings-row rankings-head" role="row">
+        <div className="rankings-table" role="table" aria-label={`${rankingTitle}队伍排名和分数`}>
+          <div className="rankings-a11y-head sr-only" role="row">
             <span role="columnheader">排名</span>
             <span role="columnheader">队伍编号</span>
-            <span role="columnheader">队伍</span>
-            <span role="columnheader">提交</span>
+            <span role="columnheader">队伍名称</span>
             <span role="columnheader">综合分</span>
           </div>
-          {!payload ? <div className="rankings-empty-state" role="status">{loadError || "正在加载队伍排名"}</div> : rankings.map((team) => (
-            <div className={team.scoreValue === null ? "rankings-row is-pending" : "rankings-row"} role="row" key={team.id}>
-              <span className="rankings-rank" role="cell">{team.scoreValue === null ? "--" : team.rank}</span>
-              <span className="rankings-registration" role="cell">{team.registrationNumber || "--"}</span>
-              <span className="rankings-team" role="cell"><strong>{team.teamName}</strong>{team.projectName ? <small>{team.projectName}</small> : null}</span>
-              <span className="rankings-submissions" role="cell">{team.submittedCount}/{team.rosterCount}</span>
-              <span className="rankings-score" role="cell">{team.score}</span>
+          {!payload ? <div className="rankings-empty-state" role="status">{loadError || "正在加载队伍排名"}</div> : rankings.length === 0 ? (
+            <div className="rankings-empty-state" role="status">当前组别暂无参赛队伍</div>
+          ) : (
+            <div className={`rankings-board${useTwoColumns ? " is-two-columns" : " is-single-column"}`}>
+              {rankingColumns.map((column, columnIndex) => (
+                <div className="rankings-column" role="rowgroup" key={columnIndex === 0 ? "ranking-first-half" : "ranking-second-half"}>
+                  <div className="rankings-row rankings-head" aria-hidden="true">
+                    <span>排名</span>
+                    <span>队伍编号</span>
+                    <span>队伍名称</span>
+                    <span>综合分</span>
+                  </div>
+                  {column.map((team) => {
+                  const rowClassName = [
+                    "rankings-row",
+                    team.scoreValue === null ? "is-pending" : "",
+                    team.rank >= 1 && team.rank <= 3 ? `is-rank-${team.rank}` : "",
+                  ].filter(Boolean).join(" ");
+                  return (
+                    <div className={rowClassName} role="row" key={team.id}>
+                      <span className="rankings-rank" role="cell">{team.scoreValue === null ? "--" : team.rank}</span>
+                      <span className="rankings-registration" role="cell">{team.registrationNumber || "--"}</span>
+                      <span className="rankings-team" role="cell" title={team.teamName}><strong>{team.teamName}</strong></span>
+                      <span className="rankings-score" role="cell">{team.score}</span>
+                    </div>
+                  );
+                  })}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </section>
     </main>
@@ -686,6 +1541,8 @@ function getWorkflowPhaseCopy(phase) {
     opening_scores_held: ["前三队评分中", "成绩暂不发布，继续按出场顺序完成前三队评分"],
     opening_batch_ready: ["前三队待集中公布", "在第四队开始前按出场顺序依次展示前三队成绩"],
     result_ready: ["成绩待发布", "核对当前队综合分并发布展示"],
+    ready_for_intermission: ["上半场已完成", "结束上半场后保留成绩和总排名，评委进入等待"],
+    intermission: ["中场休息", "上半场成绩已锁定，请选择并开启下半场队伍"],
     ready_to_close: ["待结束赛次", "全部队伍已完成，确认后结束本组比赛"],
     competition_complete: ["本组已完成", "查看并复核本组最终排名"],
   }[phase] ?? ["赛事准备", "核对当前比赛状态"];
@@ -920,7 +1777,7 @@ function JudgeManagementWorkspace({
 function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh, showToast, toast, expireSession, updateLocalTeam }) {
   const [view, setView] = useState(() =>
     new URLSearchParams(window.location.search).get("adminView") ||
-    (state.competitionSetup?.activeGroupId ? "control" : "setup"),
+    (state.competitionSetup?.activeGroupId && state.competitionSetup?.groups?.[state.competitionSetup.activeGroupId]?.activeHalf ? "control" : "setup"),
   );
   const [selectedGroupId, setSelectedGroupId] = useState(() => {
     const publishedTeam = state.teams?.find((team) => team.id === state.displaySelection?.teamId);
@@ -942,6 +1799,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   const [rosterDirty, setRosterDirty] = useState(false);
   const [newJudge, setNewJudge] = useState({ username: "", displayName: "", password: "", enrollment: "future_assignments", operationId: "" });
   const [showJudgeDetails, setShowJudgeDetails] = useState(false);
+  const [isExportingResults, setIsExportingResults] = useState(false);
   const [setupGroupId, setSetupGroupId] = useState(() => state.competitionSetup?.activeGroupId || contestGroups[0]?.id);
   const [setupDraft, setSetupDraft] = useState({ teamIds: [], judgeIds: [], revision: 0 });
   const [setupDirty, setSetupDirty] = useState(false);
@@ -971,8 +1829,17 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   const rosterCount = roster.length;
   const groupTeams = orderTeams(teams, selectedGroupId);
   const activeGroupTeams = groupTeams.filter((team) => team.status === "active");
+  const exportSetupTeamIds = new Set(state.competitionSetup?.groups?.[selectedGroupId]?.teamIds ?? []);
+  const exportTeams = activeGroupTeams.filter((team) => exportSetupTeamIds.has(team.id));
+  const exportFinalTeams = exportTeams.filter((team) => state.summariesByTeam?.[team.id]?.isFinal);
+  const exportJudgeColumnCount = Math.max(
+    7,
+    ...exportFinalTeams.map((team) => state.summariesByTeam?.[team.id]?.rosterCount ?? 0),
+  );
   const displaySetupTeamIds = new Set(state.competitionSetup?.groups?.[selectedGroupId]?.teamIds ?? []);
   const displayCompetitionTeams = activeGroupTeams.filter((team) => displaySetupTeamIds.has(team.id));
+  const selectedRankingSetup = state.competitionSetup?.groups?.[selectedGroupId];
+  const selectedRankingPageLabel = getCompetitionRankingScope(selectedRankingSetup).title;
   const normalizedDisplaySearch = displaySearch.trim().toLocaleLowerCase("zh-CN");
   const displayFilteredTeams = normalizedDisplaySearch
     ? displayCompetitionTeams.filter((team) => [team.registrationNumber, team.teamName, team.projectName]
@@ -981,20 +1848,50 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   const displayCandidateTeam = displayCompetitionTeams.find((team) => team.id === displayTeamId) ?? null;
   const displayCandidateSummary = displayCandidateTeam ? state.summariesByTeam?.[displayCandidateTeam.id] : null;
   const displayCandidateSubmittedCount = displayCandidateSummary?.submittedCount ?? 0;
+  const displayCandidatePublicationStatus = getDisplayPublicationStatus(displayCandidateSummary);
   const publishedDisplayTeamId = state.displaySelection?.teamId ?? "";
   const publishedDisplayTeamGroupId = teams.find((team) => team.id === publishedDisplayTeamId)?.groupId ?? "";
-  const openingDisplayTeam = displayCompetitionTeams[0] ?? null;
+  const displayedRankingSetup = state.competitionSetup?.groups?.[state.displaySelection?.rankingGroupId];
+  const displayedRankingPageLabel = getCompetitionRankingScope(displayedRankingSetup).title;
+  const assignedDisplayTeam = displayCompetitionTeams.find((team) => team.id === state.activeAssignment?.teamId) ?? null;
+  const openingDisplayTeam = assignedDisplayTeam ?? displayCompetitionTeams[0] ?? null;
   const openingDisplaySummary = openingDisplayTeam ? state.summariesByTeam?.[openingDisplayTeam.id] : null;
   const openingDisplaySubmittedCount = openingDisplaySummary?.submittedCount ?? 0;
-  const openingDisplayReady = Boolean(openingDisplayTeam && openingDisplaySubmittedCount >= 1);
-  const scoreDisplayIsActive = ["final", "temporary"].includes(state.displaySelection?.publicationStatus);
-  const projectionEntryPath = getScoreboardRoute(state.displaySelection?.publicationStatus);
+  const openingDisplayPublicationStatus = getDisplayPublicationStatus(openingDisplaySummary);
+  const openingDisplayReady = Boolean(openingDisplayTeam);
+  const scoreDisplayIsActive = state.displaySelection?.projectionView === "scoreboard" && ["waiting", "final", "temporary"].includes(state.displaySelection?.publicationStatus);
+  const rankingAnimationEnabled = state.displaySelection?.rankingAnimationEnabled === true;
+  const displayRankingTransition = state.displaySelection?.rankingTransition;
+  const displayRankingTransitionActive = Boolean(displayRankingTransition);
+  const displayRankingTransitionFromTeam = teams.find((team) => team.id === displayRankingTransition?.fromTeamId) ?? null;
+  const displayRankingTransitionToTeam = teams.find((team) => team.id === displayRankingTransition?.toTeamId) ?? null;
   const activeCompetitionGroupId = state.competitionSetup?.activeGroupId ?? null;
   const activeCompetitionSetup = activeCompetitionGroupId ? state.competitionSetup?.groups?.[activeCompetitionGroupId] : null;
-  const dispatchableTeams = activeGroupTeams.filter((team) => activeCompetitionSetup?.teamIds?.includes(team.id));
+  const activeHalfTeamIds = getActiveCompetitionHalfTeamIds(activeCompetitionSetup);
+  const dispatchableTeams = activeGroupTeams.filter((team) => activeHalfTeamIds.includes(team.id));
   const selectedSetup = state.competitionSetup?.groups?.[setupGroupId] ?? null;
-  const availableSetupTeams = orderTeams(teams, setupGroupId, false).filter((team) => team.status === "active");
-  const setupTeams = orderTeams(teams, setupGroupId).filter((team) => team.status === "active" || setupDraft.teamIds.includes(team.id));
+  const selectedFirstHalfTeamIds = getCompetitionHalfTeamIds(selectedSetup, "first");
+  const selectedSecondHalfTeamIds = getCompetitionHalfTeamIds(selectedSetup, "second");
+  const setupIsIntermission = Boolean(
+    selectedSetup?.status === "open" &&
+    selectedSetup?.activeHalf === null &&
+    selectedSetup?.halves?.first?.status === "closed" &&
+    selectedSetup?.halves?.second?.status === "draft",
+  );
+  const setupHalfId = selectedSetup?.status === "draft"
+    ? "first"
+    : selectedSetup?.activeHalf ?? (selectedSetup?.halves?.first?.status === "closed" ? "second" : "first");
+  const setupHalfLabel = setupHalfId === "second" ? "下半场" : "上半场";
+  const setupEditable = selectedSetup?.status === "draft" || setupIsIntermission;
+  const setupJudgesEditable = selectedSetup?.status === "draft";
+  const setupExcludedTeamIds = new Set(setupHalfId === "second" ? selectedFirstHalfTeamIds : []);
+  const availableSetupTeams = orderTeams(teams, setupGroupId, false).filter(
+    (team) => team.status === "active" && !setupExcludedTeamIds.has(team.id),
+  );
+  const recommendedSetupTeamIds = availableSetupTeams.slice(0, Math.min(10, availableSetupTeams.length)).map((team) => team.id);
+  const setupTeams = orderTeams(teams, setupGroupId).filter(
+    (team) => !setupExcludedTeamIds.has(team.id) && (team.status === "active" || setupDraft.teamIds.includes(team.id)),
+  );
   const availableSetupJudges = accounts.filter((account) => account.role === "judge" && account.status === "active");
   const setupJudges = accounts.filter((account) => account.role === "judge" && (account.status === "active" || setupDraft.judgeIds.includes(account.id)));
   const hasUnavailableSetupTeams = setupDraft.teamIds.some((id) => !availableSetupTeams.some((team) => team.id === id));
@@ -1100,6 +1997,12 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     currentSubmittedCount: 0,
     currentRosterCount: 0,
   };
+  const setupHalfProgress = setupProgress.currentHalf ?? {
+    id: selectedSetup?.activeHalf ?? null,
+    completedTeams: 0,
+    totalTeams: setupHalfId === "second" ? selectedSecondHalfTeamIds.length : selectedFirstHalfTeamIds.length,
+    percentage: 0,
+  };
   const setupCurrentTeam = teams.find((team) => team.id === setupProgress.currentTeamId) ?? null;
   const setupRemainingTeams = Math.max(0, setupProgress.totalTeams - setupProgress.completedTeams);
 
@@ -1147,11 +2050,11 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   useEffect(() => {
     if (!selectedSetup || setupDirty) return;
     setSetupDraft({
-      teamIds: [...(selectedSetup.teamIds ?? [])],
+      teamIds: getCompetitionHalfTeamIds(selectedSetup, setupHalfId),
       judgeIds: [...(selectedSetup.judgeIds ?? [])],
       revision: selectedSetup.revision ?? 0,
     });
-  }, [selectedSetup, setupDirty]);
+  }, [selectedSetup, setupDirty, setupHalfId]);
 
   useEffect(() => () => {
     if (restartIntentTimerRef.current) window.clearTimeout(restartIntentTimerRef.current);
@@ -1181,11 +2084,16 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     const enteringDisplay = view === "display" && previousAdminViewRef.current !== "display";
     previousAdminViewRef.current = view;
     if (!enteringDisplay) return;
-    if (!displayTeamId && publishedDisplayTeamId) setDisplayTeamId(publishedDisplayTeamId);
-    if ((!displayTeamId || displayTeamId === publishedDisplayTeamId) && publishedDisplayTeamGroupId) {
-      setSelectedGroupId(publishedDisplayTeamGroupId);
+    const preferAssignedTeam = state.displaySelection?.projectionView !== "scoreboard" && currentAssignment.teamId;
+    const preferredTeamId = preferAssignedTeam ? currentAssignment.teamId : publishedDisplayTeamId;
+    const preferredGroupId = preferAssignedTeam ? currentAssignment.groupId : publishedDisplayTeamGroupId;
+    if ((!displayTeamId || displayTeamId === publishedDisplayTeamId) && preferredTeamId) {
+      setDisplayTeamId(preferredTeamId);
     }
-  }, [displayTeamId, publishedDisplayTeamId, publishedDisplayTeamGroupId, view]);
+    if ((!displayTeamId || displayTeamId === publishedDisplayTeamId) && preferredGroupId) {
+      setSelectedGroupId(preferredGroupId);
+    }
+  }, [currentAssignment.groupId, currentAssignment.teamId, displayTeamId, publishedDisplayTeamId, publishedDisplayTeamGroupId, state.displaySelection?.projectionView, view]);
 
   function changeView(nextView) {
     setView(nextView);
@@ -1194,23 +2102,41 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
   }
 
-  async function openViewInNewTab(nextView) {
+  async function openAuthenticatedPathInNewTab(nextPath, sessionTokenStorageKey, failureMessage) {
     const nextWindow = window.open("about:blank", "_blank");
     if (!nextWindow) {
       showToast("浏览器阻止了新标签页，请允许弹出窗口后重试");
-      return;
+      return false;
     }
     const nextDeviceId = createDeviceId();
     try {
       const session = await cloneAdminSession(authToken, nextDeviceId);
-      nextWindow.sessionStorage.setItem(authTokenStorageKey, session.token);
+      nextWindow.sessionStorage.setItem(sessionTokenStorageKey, session.token);
       nextWindow.sessionStorage.setItem(deviceStorageKey, nextDeviceId);
       nextWindow.opener = null;
-      nextWindow.location.replace(`/?adminView=${encodeURIComponent(nextView)}`);
+      nextWindow.location.replace(nextPath);
+      return true;
     } catch (error) {
       nextWindow.close();
-      showToast(error.message || "无法打开新的后台标签页");
+      showToast(error.message || failureMessage);
+      return false;
     }
+  }
+
+  function openViewInNewTab(nextView) {
+    return openAuthenticatedPathInNewTab(
+      `/?adminView=${encodeURIComponent(nextView)}`,
+      authTokenStorageKey,
+      "无法打开新的后台标签页",
+    );
+  }
+
+  function openRankingPreview(groupId) {
+    return openAuthenticatedPathInNewTab(
+      `/rankings?groupId=${encodeURIComponent(groupId)}`,
+      projectionControlTokenStorageKey,
+      "无法打开队伍排名预览",
+    );
   }
 
   function activateAdminView(event, nextView) {
@@ -1273,7 +2199,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
       await refresh();
       return payload;
     } catch (error) {
-      if (error.status === 401 || error.status === 403) expireSession(error.message || "登录已失效，请重新登录");
+      if (error.status === 401) expireSession(error.message || "登录已失效，请重新登录");
       else showToast(error.message || fallback, 4200);
       return null;
     } finally {
@@ -1299,6 +2225,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     );
     if (result) {
       setForceDispatch(false);
+      setDisplayTeamId(dispatchTeamId);
       showToast("当前评分队伍已派发");
     }
   }
@@ -1335,6 +2262,22 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     if (result) {
       setSetupGroupId(groupId);
       showToast(`${getGroupLabel(groupId)}比赛已结束，赛次已锁定`);
+      changeView("setup");
+    }
+  }
+
+  async function finishFirstHalf(groupId = workflowGroupId) {
+    const setup = state.competitionSetup?.groups?.[groupId];
+    if (!setup || setup.status !== "open" || setup.activeHalf !== "first") return;
+    const result = await runAdminMutation(
+      `/api/competition-setup/${encodeURIComponent(groupId)}/first-half/finish`,
+      { method: "POST", body: { revision: setup.revision } },
+      "结束上半场失败",
+    );
+    if (result) {
+      setSetupGroupId(groupId);
+      clearDispatchSelection();
+      showToast("上半场已结束，成绩和总排名已保留，请配置下半场");
       changeView("setup");
     }
   }
@@ -1381,9 +2324,20 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
       case "close_competition_group":
         await closeCompetition(action.groupId);
         break;
+      case "finish_first_half":
+        await finishFirstHalf(action.groupId);
+        break;
+      case "configure_second_half":
+        if (action.groupId) setSetupGroupId(action.groupId);
+        changeView("setup");
+        break;
+      case "open_second_half":
+        if (action.groupId) setSetupGroupId(action.groupId);
+        await openCompetition(action.groupId);
+        break;
       case "review_rankings": {
         const groupId = action.groupId || workflowGroupId;
-        window.open(`/rankings?groupId=${encodeURIComponent(groupId)}#controlToken=${encodeURIComponent(authToken)}`, "_blank", "noopener,noreferrer");
+        await openRankingPreview(groupId);
         break;
       }
       default:
@@ -1410,7 +2364,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   }
 
   function toggleSetupItem(field, id) {
-    if (selectedSetup?.status !== "draft") return;
+    if (!setupEditable || (field === "judgeIds" && !setupJudgesEditable)) return;
     setSetupDirty(true);
     setSetupDraft((current) => ({
       ...current,
@@ -1423,7 +2377,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
   function cancelSetupChanges() {
     if (!selectedSetup) return;
     setSetupDraft({
-      teamIds: [...selectedSetup.teamIds],
+      teamIds: getCompetitionHalfTeamIds(selectedSetup, setupHalfId),
       judgeIds: [...selectedSetup.judgeIds],
       revision: selectedSetup.revision,
     });
@@ -1435,33 +2389,46 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     if (setupDraft.judgeIds.length < 3) return showToast("请至少选择 3 位启用评委");
     if (setupHasUnavailableParticipants) return showToast("请先移出已退赛队伍或已停用评委");
     const result = await runAdminMutation(
-      `/api/competition-setup/${encodeURIComponent(setupGroupId)}`,
-      { method: "PUT", body: { ...setupDraft, revision: selectedSetup?.revision ?? setupDraft.revision } },
-      "开赛配置保存失败",
+      setupHalfId === "second"
+        ? `/api/competition-setup/${encodeURIComponent(setupGroupId)}/second-half`
+        : `/api/competition-setup/${encodeURIComponent(setupGroupId)}`,
+      {
+        method: "PUT",
+        body: setupHalfId === "second"
+          ? { teamIds: setupDraft.teamIds, revision: selectedSetup?.revision ?? setupDraft.revision }
+          : { ...setupDraft, revision: selectedSetup?.revision ?? setupDraft.revision },
+      },
+      `${setupHalfLabel}配置保存失败`,
     );
     if (result) {
       setSetupDirty(false);
-      showToast(`${getGroupLabel(setupGroupId)}开赛配置已保存`);
+      showToast(`${getGroupLabel(setupGroupId)}${setupHalfLabel}配置已保存`);
     }
   }
 
-  async function openCompetition() {
+  async function openCompetition(targetGroupId = setupGroupId) {
     if (setupDirty) return showToast("请先保存当前开赛配置");
-    if (!selectedSetup) return;
+    const targetSetup = state.competitionSetup?.groups?.[targetGroupId];
+    if (!targetSetup) return;
+    const targetIsSecondHalf = targetSetup.status === "open"
+      && targetSetup.activeHalf === null
+      && targetSetup.halves?.first?.status === "closed";
     if (state.security?.adminPasswordRotationRequired && !state.security?.adminPasswordRotated) {
       showToast("正式开赛前必须先修改管理员初始密码");
       openJudgeMaintenance(accounts.find((account) => account.role === "admin")?.id ?? "");
       return;
     }
     const result = await runAdminMutation(
-      `/api/competition-setup/${encodeURIComponent(setupGroupId)}/open`,
-      { method: "POST", body: { revision: selectedSetup.revision } },
-      "开启比赛失败",
+      targetIsSecondHalf
+        ? `/api/competition-setup/${encodeURIComponent(targetGroupId)}/second-half/open`
+        : `/api/competition-setup/${encodeURIComponent(targetGroupId)}/open`,
+      { method: "POST", body: { revision: targetSetup.revision } },
+      `开启${targetIsSecondHalf ? "下半场" : "上半场"}失败`,
     );
     if (result) {
-      setSelectedGroupId(setupGroupId);
+      setSelectedGroupId(targetGroupId);
       clearDispatchSelection();
-      showToast(`${getGroupLabel(setupGroupId)}已开启，可以开始派发队伍`);
+      showToast(`${getGroupLabel(targetGroupId)}${targetIsSecondHalf ? "下半场" : "上半场"}已开启，可以开始派发队伍`);
       changeView("control");
     }
   }
@@ -1722,11 +2689,71 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     return result;
   }
 
+  async function setRankingAnimationEnabled(enabled) {
+    const result = await runAdminMutation(
+      "/api/display-settings",
+      {
+        method: "PUT",
+        body: {
+          rankingAnimationEnabled: enabled,
+          revision: state.displaySelection?.displayRevision ?? 0,
+        },
+      },
+      "实时排名动画设置失败",
+    );
+    if (result) showToast(enabled ? "已开启切队前实时排名动画" : "已关闭切队前实时排名动画");
+    return result;
+  }
+
+  async function showOverallRankings() {
+    const groupId = selectedGroupId || activeCompetitionGroupId || contestGroups[0]?.id;
+    const result = await runAdminMutation(
+      "/api/display-view",
+      {
+        method: "PUT",
+        body: { groupId, revision: state.displaySelection?.displayRevision ?? 0 },
+      },
+      "切换总排名展示失败",
+    );
+    if (result) showToast(`大屏已切换到${getGroupLabel(groupId)}${selectedRankingPageLabel}`);
+    return result;
+  }
+
   async function startOpeningDisplay() {
     if (!openingDisplayTeam) return showToast("当前组还没有本场参赛队伍");
-    if (!openingDisplayReady) return showToast("第 1 队尚无评委提交，暂不能开始成绩展示");
     setDisplayTeamId(openingDisplayTeam.id);
-    return publish(openingDisplayTeam, openingDisplaySummary?.isFinal ? "final" : "temporary");
+    return publish(openingDisplayTeam, openingDisplayPublicationStatus);
+  }
+
+  async function exportGroupResults() {
+    if (isExportingResults) return;
+    if (!exportFinalTeams.length) {
+      showToast("该组暂无最终成绩可导出");
+      return;
+    }
+    setIsExportingResults(true);
+    try {
+      const { blob, filename } = await requestApiDownload(
+        `/api/admin/results.xlsx?groupId=${encodeURIComponent(selectedGroupId)}`,
+        { headers: authHeaders(authToken) },
+        "成绩导出失败",
+      );
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      anchor.style.display = "none";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      showToast(`已导出${getGroupLabel(selectedGroupId)} ${exportFinalTeams.length} 支队伍成绩`);
+    } catch (error) {
+      if (error.status === 401) expireSession(error.message || "登录已失效，请重新登录");
+      else showToast(error.message || "成绩导出失败", 4200);
+    } finally {
+      setIsExportingResults(false);
+    }
   }
 
   const navItems = [
@@ -1735,6 +2762,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
     ["teams", "队伍管理"],
     ["judges", "评委管理"],
     ["display", "成绩展示"],
+    ["export", "成绩导出"],
     ["emergency", "应急处置"],
   ];
   const selectedDisplaySummary = selectedDisplayTeam ? state.summariesByTeam?.[selectedDisplayTeam.id] : null;
@@ -1749,7 +2777,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
         {navItems.map(([id, label]) => <a href={`/?adminView=${encodeURIComponent(id)}`} key={id} className={view === id ? "is-selected" : ""} aria-current={view === id ? "page" : undefined} title={`${label}；中键或 Ctrl/⌘ 点击可在新标签页打开`} onClick={(event) => activateAdminView(event, id)} onAuxClick={(event) => openAdminViewFromMiddleClick(event, id)}>{label}</a>)}
       </nav>
       {workflow ? <section className={`admin-workflow-banner is-${workflow.phase}`} aria-labelledby="admin-workflow-title">
-        <div className="admin-workflow-phase"><span>{getGroupLabel(workflowGroupId)} · 当前阶段</span><h2 id="admin-workflow-title">{workflowPhaseCopy[0]}</h2><p>{workflowPhaseCopy[1]}</p></div>
+        <div className="admin-workflow-phase"><span>{getGroupLabel(workflowGroupId)} · {workflow.progress?.halfLabel ?? "当前阶段"}</span><h2 id="admin-workflow-title">{workflowPhaseCopy[0]}</h2><p>{workflowPhaseCopy[1]}</p><small>本半场 {workflow.progress?.currentHalf?.completedTeams ?? 0}/{workflow.progress?.currentHalf?.totalTeams ?? 0} · 累计 {workflow.progress?.completedTeams ?? 0}/{workflow.progress?.totalTeams ?? 0}</small></div>
         <div className="admin-workflow-context">
           <div><span>当前队</span><strong>{workflowCurrentTeam?.teamName ?? "尚未派发"}</strong><small>{workflowCurrentTeam ? `${workflow.progress?.currentSubmittedCount ?? 0}/${workflow.progress?.currentRosterCount ?? 0} 位已提交` : "等待管理员派发"}</small></div>
           <ArrowRight size={18} aria-hidden="true" />
@@ -1762,8 +2790,8 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
       {view === "setup" ? (
         <section className="competition-setup-page">
           <header className="competition-setup-heading">
-            <div><span>分组赛次</span><h2>统一开赛配置</h2><p>每个组别独立确定本场参赛队伍和评委，开启后配置冻结。</p></div>
-            <div className={`competition-live-status ${activeCompetitionGroupId ? "is-open" : ""}`}><span>{activeCompetitionGroupId ? "当前已开启" : "等待开赛"}</span><strong>{activeCompetitionGroupId ? getGroupLabel(activeCompetitionGroupId) : "尚未开启组别"}</strong></div>
+            <div><span>分组赛次</span><h2>分半场开赛配置</h2><p>上下半场分别选队和派发，成绩、实时排名和 Excel 始终按本组累计。</p></div>
+            <div className={`competition-live-status ${activeCompetitionGroupId ? "is-open" : ""}`}><span>{activeCompetitionGroupId ? (activeCompetitionSetup?.activeHalf === "first" ? "上半场进行中" : activeCompetitionSetup?.activeHalf === "second" ? "下半场进行中" : "中场休息") : "等待开赛"}</span><strong>{activeCompetitionGroupId ? getGroupLabel(activeCompetitionGroupId) : "尚未开启组别"}</strong></div>
           </header>
           <section className="competition-maintenance-bar">
             <div><strong>抽签后资料调整</strong><span>在开赛前维护队伍名称、报名编号、项目资料和评委账号，再回到这里确认最终数量。</span></div>
@@ -1772,54 +2800,77 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
           <nav className="competition-group-tabs" aria-label="选择开赛组别">
             {contestGroups.map((group) => {
               const setup = state.competitionSetup?.groups?.[group.id];
-              return <button type="button" key={group.id} className={setupGroupId === group.id ? "is-selected" : ""} onClick={() => changeSetupGroup(group.id)}><strong>{group.label}</strong><small>{setup?.status === "open" ? "进行中" : setup?.status === "closed" ? "已结束" : "待配置"}</small></button>;
+              const setupStateLabel = setup?.status === "closed" ? "已结束" : setup?.status !== "open" ? "待配置" : setup.activeHalf === "first" ? "上半场进行中" : setup.activeHalf === "second" ? "下半场进行中" : "中场休息";
+              return <button type="button" key={group.id} className={setupGroupId === group.id ? "is-selected" : ""} onClick={() => changeSetupGroup(group.id)}><strong>{group.label}</strong><small>{setupStateLabel}</small></button>;
             })}
           </nav>
+          <section className="competition-half-steps" aria-label="半场进度">
+            <div className={selectedSetup?.halves?.first?.status === "closed" ? "is-complete" : selectedSetup?.activeHalf === "first" ? "is-active" : ""}><span>01</span><strong>上半场</strong><small>{selectedFirstHalfTeamIds.length} 支队伍</small></div>
+            <div className={setupIsIntermission ? "is-active" : selectedSetup?.halves?.first?.status === "closed" ? "is-complete" : ""}><span>02</span><strong>中场休息</strong><small>{setupIsIntermission ? "配置下半场" : "保留已有成绩"}</small></div>
+            <div className={selectedSetup?.halves?.second?.status === "closed" ? "is-complete" : selectedSetup?.activeHalf === "second" ? "is-active" : ""}><span>03</span><strong>下半场</strong><small>{selectedSecondHalfTeamIds.length} 支队伍</small></div>
+          </section>
           {selectedSetupWorkflow ? <section className={`competition-status-panel is-${selectedSetupWorkflow.phase}`} aria-labelledby="competition-status-title">
             <header>
               <div><span>当前比赛状态</span><h3 id="competition-status-title">{getGroupLabel(setupGroupId)} · {selectedSetupPhaseCopy[0]}</h3><p>{selectedSetupPhaseCopy[1]}</p></div>
               <strong>{setupProgress.percentage}%</strong>
             </header>
-            <div className="competition-status-progress">
-              <div><span>队伍完成进度</span><strong>{setupProgress.completedTeams} / {setupProgress.totalTeams} 支</strong></div>
-              <div className="competition-progress-track" role="progressbar" aria-label={`${getGroupLabel(setupGroupId)}队伍完成进度`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={setupProgress.percentage}><span style={{ width: `${setupProgress.percentage}%` }} /></div>
+            <div className="competition-status-progresses">
+              <div className="competition-status-progress">
+                <div><span>{setupHalfProgress.id ? `${setupHalfProgress.id === "second" ? "下" : "上"}半场进度` : "当前半场"}</span><strong>{setupHalfProgress.completedTeams} / {setupHalfProgress.totalTeams} 支</strong></div>
+                <div className="competition-progress-track" role="progressbar" aria-label="当前半场完成进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={setupHalfProgress.percentage}><span style={{ width: `${setupHalfProgress.percentage}%` }} /></div>
+              </div>
+              <div className="competition-status-progress is-cumulative">
+                <div><span>累计总榜进度</span><strong>{setupProgress.completedTeams} / {setupProgress.totalTeams} 支</strong></div>
+                <div className="competition-progress-track" role="progressbar" aria-label={`${getGroupLabel(setupGroupId)}累计完成进度`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={setupProgress.percentage}><span style={{ width: `${setupProgress.percentage}%` }} /></div>
+              </div>
             </div>
             <div className="competition-status-details">
-              <div><span>当前队伍</span><strong>{setupCurrentTeam?.teamName ?? (selectedSetup?.status === "open" ? "等待派发" : "尚未开赛")}</strong></div>
-              <div><span>当前队提交</span><strong>{setupCurrentTeam ? `${setupProgress.currentSubmittedCount} / ${setupProgress.currentRosterCount} 位` : "--"}</strong></div>
-              <div><span>剩余队伍</span><strong>{setupRemainingTeams} 支</strong></div>
+              <div><span>当前阶段</span><strong>{selectedSetup?.status === "closed" ? "赛次已结束" : setupIsIntermission ? "中场休息" : selectedSetup?.activeHalf === "second" ? "下半场" : selectedSetup?.activeHalf === "first" ? "上半场" : "赛前配置"}</strong></div>
+              <div><span>当前队伍</span><strong>{setupCurrentTeam?.teamName ?? (selectedSetup?.status === "closed" ? "全部队伍已完成" : selectedSetup?.status === "open" ? "等待派发" : "尚未开赛")}</strong></div>
+              <div><span>当前队提交</span><strong>{setupCurrentTeam ? `${setupProgress.currentSubmittedCount} / ${setupProgress.currentRosterCount} 位` : selectedSetup?.status === "closed" ? "全部提交完成" : "--"}</strong></div>
+              <div><span>累计剩余</span><strong>{setupRemainingTeams} 支</strong></div>
             </div>
           </section> : null}
           {selectedSetupWorkflow ? <section className="competition-preflight" aria-labelledby="competition-preflight-title">
-            <header><div><span>开赛前核对</span><h3 id="competition-preflight-title">{getGroupLabel(setupGroupId)}准备状态</h3></div><small>{setupDirty ? "当前修改尚未保存" : "关键项确认后可开启本组比赛"}</small></header>
+            <header><div><span>{selectedSetup?.status === "closed" ? "赛次完成核对" : "开赛前核对"}</span><h3 id="competition-preflight-title">{getGroupLabel(setupGroupId)} · {selectedSetup?.status === "closed" ? "上下半场完成状态" : `${setupHalfLabel}准备状态`}</h3></div><small>{selectedSetup?.status === "closed" ? "上下半场均已结束，配置已锁定" : setupDirty ? "当前修改尚未保存" : !setupEditable ? `${setupHalfLabel}已开启，配置已锁定` : `${setupHalfLabel}队伍确认后可开启`}</small></header>
             <div>{setupPreflightChecks.map((check) => <div className={`is-${check.status}`} key={check.id}><span>{check.label}</span><strong>{check.id === "team_count" ? `${check.value} 支` : check.id === "judge_count" ? `${check.value} 位` : check.status === "complete" ? "已确认" : check.status === "blocked" ? "未完成" : "待核对"}</strong></div>)}</div>
           </section> : null}
           <section className="competition-setup-summary">
-            <div><span>参赛队伍</span><strong>{setupDraft.teamIds.length}</strong><small>支队伍纳入本场</small></div>
+            <div><span>{setupHalfLabel}队伍</span><strong>{setupDraft.teamIds.length}</strong><small>支队伍纳入当前半场</small></div>
+            <div><span>累计已纳入</span><strong>{setupHalfId === "second" ? selectedFirstHalfTeamIds.length + setupDraft.teamIds.length : setupDraft.teamIds.length}</strong><small>总排名与导出的队伍范围</small></div>
             <div><span>评分评委</span><strong>{setupDraft.judgeIds.length}</strong><small>位评委参与本场</small></div>
-            <div><span>配置状态</span><strong className="is-text">{selectedSetup?.status === "open" ? "已开启" : selectedSetup?.status === "closed" ? "已结束" : setupDirty ? "未保存" : "已保存"}</strong><small>{selectedSetup?.status === "draft" ? "开赛后将锁定" : "当前配置只读"}</small></div>
+            <div><span>配置状态</span><strong className="is-text">{setupIsIntermission ? "中场配置" : selectedSetup?.status === "open" ? "已开启" : selectedSetup?.status === "closed" ? "已结束" : setupDirty ? "未保存" : "已保存"}</strong><small>{setupEditable ? `${setupHalfLabel}可编辑` : "当前配置只读"}</small></div>
           </section>
           <section className="competition-setup-grid">
             <section className="admin-panel competition-selection-panel">
-              <header><div><span>队伍范围</span><h2>{getGroupLabel(setupGroupId)}参赛队伍</h2></div><button className="ghost-action" type="button" disabled={selectedSetup?.status !== "draft"} onClick={() => { setSetupDirty(true); setSetupDraft((current) => ({ ...current, teamIds: availableSetupTeams.every((team) => current.teamIds.includes(team.id)) && !hasUnavailableSetupTeams ? [] : availableSetupTeams.map((team) => team.id) })); }}>{availableSetupTeams.every((team) => setupDraft.teamIds.includes(team.id)) && !hasUnavailableSetupTeams ? "取消全选" : "选择全部可用队伍"}</button></header>
-              <div className="competition-check-list">{setupTeams.map((team, index) => <label key={team.id} className={setupDraft.teamIds.includes(team.id) ? "is-selected" : ""}><input type="checkbox" checked={setupDraft.teamIds.includes(team.id)} disabled={selectedSetup?.status !== "draft"} onChange={() => toggleSetupItem("teamIds", team.id)} /><span><strong>{index + 1}. {team.teamName}</strong><small>{team.registrationNumber || "未填写报名编号"}{team.status !== "active" ? ` · ${getTeamStatusLabel(team.status)}，请移出本场` : ""}</small></span></label>)}</div>
+              <header><div><span>队伍范围</span><h2>{getGroupLabel(setupGroupId)} · {setupHalfLabel}参赛队伍</h2></div><div className="competition-selection-actions"><button className="ghost-action" type="button" disabled={!setupEditable || recommendedSetupTeamIds.length < 1} onClick={() => { setSetupDirty(true); setSetupDraft((current) => ({ ...current, teamIds: recommendedSetupTeamIds })); }}>按顺序选择前 {recommendedSetupTeamIds.length} 支</button><button className="ghost-action" type="button" disabled={!setupEditable || !setupDraft.teamIds.length} onClick={() => { setSetupDirty(true); setSetupDraft((current) => ({ ...current, teamIds: [] })); }}>清空本半场</button></div></header>
+              {setupEditable && availableSetupTeams.length >= 10 ? <div className={`competition-half-count-note ${setupDraft.teamIds.length === 10 ? "is-ready" : "is-attention"}`}><strong>当前已选 {setupDraft.teamIds.length} 支</strong><span>本次上下半场计划各 10 支；也可根据其他组别的实际队数手动调整。</span></div> : null}
+              {setupHalfId === "second" ? <div className="competition-locked-half-note"><strong>上半场 {selectedFirstHalfTeamIds.length} 支队伍已锁定</strong><span>下方只列出未参加上半场的队伍；新选队伍会追加到同一个总排名中。</span></div> : null}
+              <div className="competition-check-list">{setupTeams.map((team) => <label key={team.id} className={setupDraft.teamIds.includes(team.id) ? "is-selected" : ""}><input type="checkbox" checked={setupDraft.teamIds.includes(team.id)} disabled={!setupEditable} onChange={() => toggleSetupItem("teamIds", team.id)} /><span><strong>{team.appearanceOrder}. {team.teamName}</strong><small>{team.registrationNumber || "未填写报名编号"}{team.status !== "active" ? ` · ${getTeamStatusLabel(team.status)}，请移出本场` : ""}</small></span></label>)}</div>
             </section>
             <section className="admin-panel competition-selection-panel">
-              <header><div><span>评委范围</span><h2>本场评分评委</h2></div><button className="ghost-action" type="button" disabled={selectedSetup?.status !== "draft"} onClick={() => { setSetupDirty(true); setSetupDraft((current) => ({ ...current, judgeIds: availableSetupJudges.every((judge) => current.judgeIds.includes(judge.id)) && !hasUnavailableSetupJudges ? [] : availableSetupJudges.map((judge) => judge.id) })); }}>{availableSetupJudges.every((judge) => setupDraft.judgeIds.includes(judge.id)) && !hasUnavailableSetupJudges ? "取消全选" : "选择全部启用评委"}</button></header>
-              <div className="competition-check-list is-judges">{setupJudges.map((judge) => <label key={judge.id} className={setupDraft.judgeIds.includes(judge.id) ? "is-selected" : ""}><input type="checkbox" checked={setupDraft.judgeIds.includes(judge.id)} disabled={selectedSetup?.status !== "draft"} onChange={() => toggleSetupItem("judgeIds", judge.id)} /><span><strong>{judge.displayName}</strong><small>账号 {judge.username}{judge.status !== "active" ? " · 已停用，请移出本场" : ""}</small></span></label>)}</div>
+              <header><div><span>评委范围</span><h2>{setupHalfId === "second" ? "下半场沿用评委" : "本场评分评委"}</h2></div><button className="ghost-action" type="button" disabled={!setupJudgesEditable} onClick={() => { setSetupDirty(true); setSetupDraft((current) => ({ ...current, judgeIds: availableSetupJudges.every((judge) => current.judgeIds.includes(judge.id)) && !hasUnavailableSetupJudges ? [] : availableSetupJudges.map((judge) => judge.id) })); }}>{availableSetupJudges.every((judge) => setupDraft.judgeIds.includes(judge.id)) && !hasUnavailableSetupJudges ? "取消全选" : "选择全部启用评委"}</button></header>
+              {setupHalfId === "second" ? <div className="competition-locked-half-note is-judges"><strong>评委名册将从服务器当前计划名册继承</strong><span>上半场每支队伍的冻结评委快照不会改变。</span></div> : null}
+              <div className="competition-check-list is-judges">{setupJudges.map((judge) => <label key={judge.id} className={setupDraft.judgeIds.includes(judge.id) ? "is-selected" : ""}><input type="checkbox" checked={setupDraft.judgeIds.includes(judge.id)} disabled={!setupJudgesEditable} onChange={() => toggleSetupItem("judgeIds", judge.id)} /><span><strong>{judge.displayName}</strong><small>账号 {judge.username}{judge.status !== "active" ? " · 已停用，请移出本场" : ""}</small></span></label>)}</div>
             </section>
           </section>
-          <footer className="competition-setup-actions" ref={setupActionsRef} tabIndex={-1}><span>{restartIntentGroupId === setupGroupId ? "再次点击应急重新开赛，将清除本组全部评分" : setupHasUnavailableParticipants ? "队伍或评委状态已变化，请移出不可用成员并重新保存" : setupDirty ? "当前配置有未保存修改" : setupPreflightChecks.some((check) => check.status !== "complete") ? "开赛核对仍有未完成项目" : selectedSetup?.status === "draft" ? "配置已保存，确认无误后开启本组比赛" : selectedSetup?.status === "closed" ? "本组赛次已结束，历史配置和成绩已锁定" : "本组赛次配置已经冻结；需要调整时可撤回或应急重开"}</span>{selectedSetup?.status === "open" ? <button className={setupGroupHasScoringData ? "danger-action" : "ghost-action"} type="button" disabled={Boolean(activeCompetitionGroupId && activeCompetitionGroupId !== setupGroupId)} onClick={reopenCompetitionForSetup}>{restartIntentGroupId === setupGroupId ? "再次点击，确认清除并重开" : setupGroupHasScoringData ? "应急重新开赛" : "撤回开赛并调整"}</button> : null}<button className="ghost-action" type="button" disabled={!setupDirty} onClick={cancelSetupChanges}>取消修改</button><button className="ghost-action" type="button" disabled={!setupDirty} onClick={saveSetup}><Save size={17} aria-hidden="true" />保存配置</button><button className="primary-action" type="button" disabled={setupDirty || setupHasUnavailableParticipants || setupPreflightChecks.some((check) => check.status !== "complete") || selectedSetup?.status !== "draft" || !setupDraft.teamIds.length || setupDraft.judgeIds.length < 3 || (state.security?.adminPasswordRotationRequired && !state.security?.adminPasswordRotated)} onClick={openCompetition}><Play size={17} aria-hidden="true" />{selectedSetup?.status === "open" ? "本组已开启" : selectedSetup?.status === "closed" ? "本组已结束" : "开启本组比赛"}</button></footer>
+          <footer className="competition-setup-actions" ref={setupActionsRef} tabIndex={-1}>
+            <span>{restartIntentGroupId === setupGroupId ? "再次点击应急重新开赛，将清除本组全部评分" : setupHasUnavailableParticipants ? "队伍或评委状态已变化，请移出不可用成员并重新保存" : setupDirty ? `当前${setupHalfLabel}配置有未保存修改` : setupPreflightChecks.some((check) => check.status !== "complete") ? `${setupHalfLabel}开赛核对仍有未完成项目` : selectedSetup?.status === "closed" ? "本组赛次已结束，上下半场成绩已锁定" : setupIsIntermission ? "上半场成绩已保留，下半场配置已保存后可开启" : selectedSetup?.status === "draft" ? "上半场配置已保存，确认无误后开启" : `${setupHalfLabel}正在进行，当前配置只读`}</span>
+            {selectedSetup?.status === "open" ? <button className={setupGroupHasScoringData ? "danger-action" : "ghost-action"} type="button" disabled={Boolean(activeCompetitionGroupId && activeCompetitionGroupId !== setupGroupId)} onClick={reopenCompetitionForSetup}>{restartIntentGroupId === setupGroupId ? "再次点击，确认清除并重开" : setupGroupHasScoringData ? "应急重新开赛" : "撤回开赛并调整"}</button> : null}
+            <button className="ghost-action" type="button" disabled={!setupDirty} onClick={cancelSetupChanges}>取消修改</button>
+            <button className="ghost-action" type="button" disabled={!setupDirty} onClick={saveSetup}><Save size={17} aria-hidden="true" />保存{setupHalfLabel}配置</button>
+            <button className="primary-action" type="button" disabled={setupDirty || setupHasUnavailableParticipants || setupPreflightChecks.some((check) => check.status !== "complete") || !setupEditable || !setupDraft.teamIds.length || setupDraft.judgeIds.length < 3 || (state.security?.adminPasswordRotationRequired && !state.security?.adminPasswordRotated)} onClick={() => openCompetition()}><Play size={17} aria-hidden="true" />{selectedSetup?.status === "closed" ? "本组已结束" : `开启${setupHalfLabel}`}</button>
+          </footer>
         </section>
       ) : null}
 
       {view === "control" ? (
         <section className="admin-module-grid control-module">
           <section className="admin-panel assignment-panel">
-            <header><span>当前派发</span><h2>{currentTeam ? currentTeam.teamName : "等待派发队伍"}</h2><small>{currentAssignment.status === "final" ? "本队评分已完成，下一队已经预选" : currentAssignment.status === "awaiting_submissions" ? "等待有效评委提交" : currentAssignment.status === "scoring" ? "正在评分" : "尚未开始"}</small></header>
+            <header><span>当前派发 · {activeCompetitionSetup?.activeHalf === "second" ? "下半场" : activeCompetitionSetup?.activeHalf === "first" ? "上半场" : "中场休息"}</span><h2>{currentTeam ? currentTeam.teamName : "等待派发队伍"}</h2><small>{currentAssignment.status === "final" ? "本队评分已完成，下一队已经预选" : currentAssignment.status === "awaiting_submissions" ? "等待有效评委提交" : currentAssignment.status === "scoring" ? "正在评分" : activeCompetitionSetup?.activeHalf ? "尚未开始" : "请先配置并开启下半场"}</small></header>
             <div className="assignment-form">
               <label>当前比赛组别<select value={activeCompetitionGroupId ?? ""} disabled><option value="">请先完成开赛配置</option>{contestGroups.map((group) => <option value={group.id} key={group.id}>{group.label}</option>)}</select></label>
-              <label>下一支派发队伍<select ref={dispatchSelectRef} value={dispatchTeamId} disabled={!activeCompetitionGroupId} onChange={(event) => chooseDispatchTeam(event.target.value)}><option value="">请选择队伍</option>{dispatchableTeams.map((team) => {
+              <label>下一支派发队伍<select ref={dispatchSelectRef} value={dispatchTeamId} disabled={!activeCompetitionGroupId || !activeCompetitionSetup?.activeHalf} onChange={(event) => chooseDispatchTeam(event.target.value)}><option value="">请选择队伍</option>{dispatchableTeams.map((team) => {
                 const isCurrent = team.id === currentAssignment.teamId;
                 const isCompleted = Boolean(state.summariesByTeam?.[team.id]?.isFinal);
                 const suffix = isCurrent ? "（当前队）" : isCompleted ? "（已完成）" : "";
@@ -1926,8 +2977,26 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
           <section className="admin-panel display-launch-panel" aria-label="成绩大屏启动控制">
             <header><div><span>大屏候场</span><h2>标语页与首队成绩</h2></div><p>未启动成绩展示时，投屏保持宣传标语页，不显示任何队伍或实时成绩。</p></header>
             <div className="display-launch-control">
-              <div><span>{scoreDisplayIsActive ? "成绩页已启动" : "候场标语正在展示"}</span><strong>AI赋能跨电　数智融通东盟</strong><small>{openingDisplayTeam ? `首队：${openingDisplayTeam.registrationNumber || `第 ${openingDisplayTeam.appearanceOrder} 队`}·${openingDisplayTeam.teamName}${openingDisplayReady ? openingDisplaySummary?.isFinal ? "，最终成绩已就绪" : `，已提交 ${openingDisplaySubmittedCount} 位评委` : "，等待评委提交"}` : "请先在开赛配置中选择本场参赛队伍。"}</small></div>
-              <button className="primary-action" type="button" disabled={!openingDisplayReady || scoreDisplayIsActive} onClick={startOpeningDisplay}><Play size={18} aria-hidden="true" />{scoreDisplayIsActive ? "成绩展示已启动" : "从第 1 队开始展示"}</button>
+              <div><span>{scoreDisplayIsActive ? "成绩页已启动" : state.displaySelection?.projectionView === "rankings" ? "总排名正在展示" : "候场标语正在展示"}</span><strong>AI赋能跨电　数智融通东盟</strong><small>{openingDisplayTeam ? `${assignedDisplayTeam ? "当前派发" : "首队"}：${openingDisplayTeam.registrationNumber || `第 ${openingDisplayTeam.appearanceOrder} 队`}·${openingDisplayTeam.teamName}${openingDisplaySummary?.isFinal ? "，最终成绩已就绪" : openingDisplaySubmittedCount > 0 ? `，已提交 ${openingDisplaySubmittedCount} 位评委` : "，可先展示等待页"}` : "请先在开赛配置中选择本场参赛队伍。"}</small></div>
+              <button className="primary-action" type="button" disabled={!openingDisplayReady || scoreDisplayIsActive} onClick={startOpeningDisplay}><Play size={18} aria-hidden="true" />{scoreDisplayIsActive ? "成绩展示已启动" : openingDisplayPublicationStatus === "waiting" ? "展示等待评分页" : assignedDisplayTeam ? "展示当前派发队伍" : "从第 1 队开始展示"}</button>
+            </div>
+            <div className={`display-ranking-animation-setting${rankingAnimationEnabled ? " is-enabled" : ""}${displayRankingTransitionActive ? " is-active" : ""}`}>
+              <div className="display-ranking-animation-copy">
+                <span>切队过场</span>
+                <strong>实时排名动画</strong>
+                <small>{rankingAnimationEnabled ? "切换下一队前，先滚动展示已经揭晓成绩的队伍排名；动画结束后保持排名画面，由操作员手动继续，当前队无人提交时自动跳过。" : "开启后仅影响受控大屏；排名动画完成后保持画面，由操作员手动继续。"}</small>
+                {displayRankingTransitionActive ? <em>{displayRankingTransitionFromTeam?.teamName ?? "当前队"} 的排名正在展示，随后进入 {displayRankingTransitionToTeam?.teamName ?? "下一队"}</em> : null}
+              </div>
+              <button
+                className={`display-ranking-animation-switch${rankingAnimationEnabled ? " is-enabled" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={rankingAnimationEnabled}
+                onClick={() => setRankingAnimationEnabled(!rankingAnimationEnabled)}
+              >
+                <span className="switch-track" aria-hidden="true"><span className="switch-knob" /></span>
+                <strong>{rankingAnimationEnabled ? "已开启" : "已关闭"}</strong>
+              </button>
             </div>
           </section>
           <section className="admin-panel display-control-panel">
@@ -1937,7 +3006,7 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
               <label className="display-team-search"><span>查找队伍</span><div><Search size={17} aria-hidden="true" /><input type="search" value={displaySearch} onChange={(event) => setDisplaySearch(event.target.value)} placeholder="搜索队伍编号、名称或项目" /></div></label>
             </div>
             <section className="display-team-browser" aria-labelledby="display-team-browser-title">
-              <header><div><h3 id="display-team-browser-title">本场参赛队伍</h3><span>所有队伍都可选；有任意 1 位评委提交后即可展示</span></div><strong>{displayFilteredTeams.length === displayCompetitionTeams.length ? `${displayCompetitionTeams.length} 支` : `${displayFilteredTeams.length} / ${displayCompetitionTeams.length} 支`}</strong></header>
+              <header><div><h3 id="display-team-browser-title">本场参赛队伍</h3><span>所有队伍都可选；未提交时展示等待页，提交后实时更新</span></div><strong>{displayFilteredTeams.length === displayCompetitionTeams.length ? `${displayCompetitionTeams.length} 支` : `${displayFilteredTeams.length} / ${displayCompetitionTeams.length} 支`}</strong></header>
               <div className="display-team-list" role="listbox" aria-label="展示队伍">
                 {displayFilteredTeams.map((team, index) => {
                   const summary = state.summariesByTeam?.[team.id];
@@ -1961,14 +3030,54 @@ function AdminWorkspace({ state, authToken, syncStatus, logout, mutate, refresh,
             {displayCandidateTeam ? <div className="display-preview-summary">
               <div className="display-preview-team"><span>{displayCandidateTeam.registrationNumber || `第 ${displayCandidateTeam.appearanceOrder} 队`}</span><h3>{displayCandidateTeam.teamName}</h3><small>{displayCandidateTeam.projectName || "未填项目名称"}</small></div>
               <dl><div><dt>评委提交</dt><dd>{displayCandidateSubmittedCount}/{displayCandidateSummary?.rosterCount ?? rosterCount}</dd></div><div><dt>当前综合分</dt><dd>{displayCandidateSummary?.display ?? "--"}</dd></div></dl>
-              <p>{displayCandidateSubmittedCount === 0 ? "该队还没有评委提交。第 1 位评委提交后即可展示。" : displayCandidateSummary?.isFinal ? "全体评委已提交，将展示最终综合分。" : displayCandidateSubmittedCount < 3 ? "现在即可展示已提交的评委分；第 3 位提交后自动计算暂算综合分。" : "现在可展示暂算综合分；后续评委提交后大屏会自动更新。"}</p>
-              <div className="display-publish-actions"><button className="primary-action" type="button" disabled={displayCandidateSubmittedCount < 1} onClick={() => publish(displayCandidateTeam, displayCandidateSummary?.isFinal ? "final" : "temporary")}>{publishedDisplayTeamId === displayCandidateTeam.id ? "更新当前大屏" : displayCandidateSummary?.isFinal ? "展示最终成绩" : "立即展示当前成绩"}</button><button className="danger-action" type="button" disabled={!publishedDisplayTeamId} onClick={() => publish(null, "idle")}>切换到标语页</button></div>
+              <p>{displayCandidateSubmittedCount === 0 ? "该队还没有评委提交，可以先展示“等待评委打分中”；提交后大屏会自动增加评委分数。" : displayCandidateSummary?.isFinal ? "全体评委已提交，将展示最终综合分。" : displayCandidateSubmittedCount < 3 ? "现在即可展示已提交的评委分；第 3 位提交后自动计算暂算综合分。" : "现在可展示暂算综合分；后续评委提交后大屏会自动更新。"}</p>
+              <div className="display-publish-actions"><button className="primary-action" type="button" disabled={displayRankingTransitionActive && publishedDisplayTeamId !== displayCandidateTeam.id} onClick={() => publish(displayCandidateTeam, displayCandidatePublicationStatus)}>{displayRankingTransitionActive && publishedDisplayTeamId !== displayCandidateTeam.id ? "排名过场播放中" : state.displaySelection?.projectionView === "scoreboard" && publishedDisplayTeamId === displayCandidateTeam.id ? "更新当前大屏" : displayCandidatePublicationStatus === "waiting" ? "展示等待评分页" : displayCandidatePublicationStatus === "final" ? "展示最终成绩" : "立即展示当前成绩"}</button></div>
             </div> : <div className="display-preview-empty"><strong>先选择一支队伍</strong><span>从左侧点击队伍，即可在这里确认并展示。</span></div>}
-            <section className="display-current-panel" aria-label="当前大屏"><div><span>当前大屏</span><strong>{selectedDisplayTeam?.teamName ?? "未展示队伍"}</strong><small>{state.displaySelection?.publicationStatus === "final" ? "最终成绩" : state.displaySelection?.publicationStatus === "temporary" ? "实时成绩" : state.displaySelection?.publicationStatus === "review_required" ? "待复核" : "大屏等待中"}</small></div><b>{selectedDisplaySummary?.display ?? "--"}</b></section>
+            <div className="display-publish-actions display-view-actions"><button className="ghost-action" type="button" disabled={state.displaySelection?.projectionView === "rankings" && state.displaySelection?.rankingGroupId === selectedGroupId} onClick={showOverallRankings}>切换到{selectedRankingPageLabel}</button><button className="danger-action" type="button" disabled={state.displaySelection?.projectionView === "slogan"} onClick={() => publish(null, "idle")}>切换到标语页</button></div>
+            <section className="display-current-panel" aria-label="当前大屏"><div><span>当前大屏</span><strong>{state.displaySelection?.projectionView === "rankings" ? `${getGroupLabel(state.displaySelection?.rankingGroupId)}${displayedRankingPageLabel}` : selectedDisplayTeam?.teamName ?? "未展示队伍"}</strong><small>{state.displaySelection?.projectionView === "rankings" ? `${displayedRankingPageLabel}页面` : state.displaySelection?.publicationStatus === "final" ? "最终成绩" : state.displaySelection?.publicationStatus === "temporary" ? "实时成绩" : state.displaySelection?.publicationStatus === "review_required" ? "待复核" : "大屏等待中"}</small></div><b>{state.displaySelection?.projectionView === "rankings" ? "排名" : selectedDisplaySummary?.display ?? "--"}</b></section>
             <div className="display-entry-actions">
-              <a className="display-entry-button" href={`${projectionEntryPath}?live=1#controlToken=${encodeURIComponent(authToken)}`} target="_blank" rel="noreferrer"><ExternalLink size={17} aria-hidden="true" /><span><small>{scoreDisplayIsActive ? "成绩页 URL" : "标语页 URL"}</small><strong>打开受控大屏</strong></span></a>
-              <a className="display-entry-button" href={`/rankings?groupId=${encodeURIComponent(selectedGroupId)}#controlToken=${encodeURIComponent(authToken)}`} target="_blank" rel="noreferrer"><ExternalLink size={17} aria-hidden="true" /><span><small>总览投屏</small><strong>打开队伍排名</strong></span></a>
+              <a className="display-entry-button" href={`${SCOREBOARD_RESULTS_PATH}?live=1`} target="_blank" rel="noreferrer"><ExternalLink size={17} aria-hidden="true" /><span><small>固定公开网址 · 无需登录</small><strong>打开受控大屏</strong></span></a>
+              <button className="display-entry-button" type="button" onClick={() => openRankingPreview(selectedGroupId)}><ExternalLink size={17} aria-hidden="true" /><span><small>总览投屏</small><strong>打开队伍排名</strong></span></button>
             </div>
+          </section>
+        </section>
+      ) : null}
+      {view === "export" ? (
+        <section className="results-export-page">
+          <header className="results-export-heading">
+            <div><span>成绩归档</span><h2>按组别导出成绩</h2><p>生成正式 Excel 文件，按最终综合成绩从高到低排列。</p></div>
+            <div><FileSpreadsheet size={24} aria-hidden="true" /><span>Excel 工作簿</span><strong>.xlsx</strong></div>
+          </header>
+          <section className="admin-panel results-export-panel">
+            <label className="results-export-group-field">
+              <span>选择导出组别</span>
+              <select value={selectedGroupId} onChange={(event) => setSelectedGroupId(event.target.value)}>
+                {contestGroups.map((group) => <option key={group.id} value={group.id}>{group.label}</option>)}
+              </select>
+            </label>
+            <div className="results-export-summary" aria-label={`${getGroupLabel(selectedGroupId)}导出状态`}>
+              <div><span>本场参赛队伍</span><strong>{exportTeams.length}</strong><small>支</small></div>
+              <div className={exportFinalTeams.length ? "is-ready" : "is-waiting"}><span>已形成最终成绩</span><strong>{exportFinalTeams.length}</strong><small>支</small></div>
+              <div><span>评委分数列</span><strong>{exportJudgeColumnCount}</strong><small>列</small></div>
+            </div>
+            <section className="results-export-schema" aria-labelledby="results-export-schema-title">
+              <header><div><span>Excel 列结构</span><h3 id="results-export-schema-title">导出内容预览</h3></div><small>分数在 Excel 中保留两位小数</small></header>
+              <div>
+                <span>排名</span>
+                <span>队伍编号</span>
+                <span>队伍名称</span>
+                {Array.from({ length: exportJudgeColumnCount }, (_, index) => <span key={index}>评委{index + 1}分数</span>)}
+                <span>最终得分</span>
+              </div>
+            </section>
+            <div className="results-export-rule">
+              <strong>排名规则</strong>
+              <p>只导出所有评委均已提交、已经形成最终成绩的队伍；暂算成绩不会进入表格。最终成绩相同时使用并列名次，并按出场顺序排列。</p>
+            </div>
+            <footer className="results-export-actions">
+              <span>{exportFinalTeams.length ? `将导出 ${getGroupLabel(selectedGroupId)} ${exportFinalTeams.length} 支队伍` : `${getGroupLabel(selectedGroupId)}暂无可导出的最终成绩`}</span>
+              <button className="primary-action" type="button" disabled={!exportFinalTeams.length || isExportingResults} onClick={exportGroupResults}><Download size={18} aria-hidden="true" />{isExportingResults ? "正在生成 Excel…" : "导出 Excel"}</button>
+            </footer>
           </section>
         </section>
       ) : null}
@@ -2023,12 +3132,14 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
   const [selectedScoreId, setSelectedScoreId] = useState(null);
   const [isKeypadOpen, setIsKeypadOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const [replaceOnKey, setReplaceOnKey] = useState(true);
+  const [keypadNotice, setKeypadNotice] = useState("");
   const rowRefs = useRef({});
   const rubricListRef = useRef(null);
   const keypadRef = useRef(null);
   const resetIntentRef = useRef({ key: "", timer: null });
   const pendingKeypadDismissRef = useRef(null);
+  const draftRef = useRef("");
+  const replaceOnKeyRef = useRef(true);
   const activeItem = allItems.find((item) => item.id === activeScoreId) ?? allItems[0];
   const activeIndex = allItems.findIndex((item) => item.id === activeItem.id);
   const value = entry.scores?.[activeItem.id] ?? "";
@@ -2039,6 +3150,15 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
   const isServerSubmitted = Boolean(entry.submitted && submissionState === "confirmed");
   const canScore = Boolean(team && isAssignedJudge && ["scoring", "awaiting_submissions"].includes(assignment.status) && !entry.submitted);
   const canExpandKeypad = Boolean(selectedScoreId && canScore && !isKeypadOpen);
+
+  function updateDraft(nextDraft) {
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
+  }
+
+  function updateReplaceOnKey(nextValue) {
+    replaceOnKeyRef.current = nextValue;
+  }
 
   function keepVisible(itemId) {
     const adjust = () => {
@@ -2082,15 +3202,17 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
     if (!entry.submitted) return;
     setIsKeypadOpen(false);
     setSelectedScoreId(null);
-    setDraft("");
-    setReplaceOnKey(true);
+    updateDraft("");
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
   }, [entry.submitted]);
 
   useEffect(() => {
     setIsKeypadOpen(false);
     setSelectedScoreId(null);
-    setDraft("");
-    setReplaceOnKey(true);
+    updateDraft("");
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
     rubricListRef.current?.scrollTo({ top: 0, behavior: "auto" });
   }, [assignment.teamId, assignment.assignmentRevision]);
 
@@ -2109,7 +3231,8 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
 
   function collapseKeypad({ restoreFocus = true } = {}) {
     setIsKeypadOpen(false);
-    setReplaceOnKey(true);
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
     if (!restoreFocus) return;
     window.requestAnimationFrame(() => {
       if (!selectedScoreId) return;
@@ -2121,8 +3244,9 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
     const selectedItem = allItems.find((item) => item.id === selectedScoreId);
     if (!canScore || !selectedItem) return;
     setActiveScoreId(selectedItem.id);
-    setDraft(entry.scores?.[selectedItem.id] === "" ? "" : formatScore(entry.scores?.[selectedItem.id]));
-    setReplaceOnKey(true);
+    updateDraft(entry.scores?.[selectedItem.id] === "" ? "" : formatScore(entry.scores?.[selectedItem.id]));
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
     setIsKeypadOpen(true);
     keepVisible(selectedItem.id);
   }
@@ -2151,8 +3275,9 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
     if (!canScore) return showToast(entry.submitted ? "当前队伍评分已提交，如需修改请联系管理员撤回" : !isAssignedJudge ? "当前账号不在本队有效评分名册中" : "请等待管理员派发可评分队伍");
     setActiveScoreId(item.id);
     setSelectedScoreId(item.id);
-    setDraft(entry.scores?.[item.id] === "" ? "" : formatScore(entry.scores?.[item.id]));
-    setReplaceOnKey(true);
+    updateDraft(entry.scores?.[item.id] === "" ? "" : formatScore(entry.scores?.[item.id]));
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
     setIsKeypadOpen(true);
     keepVisible(item.id);
   }
@@ -2161,29 +3286,36 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
     if (!scoreDraftPattern.test(nextValue)) return false;
     const normalized = nextValue.replace(",", ".");
     if (normalized === "") {
-      setDraft("");
+      updateDraft("");
+      setKeypadNotice("");
       onScoreChange(activeItem, "");
       return true;
     }
     const numeric = Number(normalized);
     if (!Number.isFinite(numeric) || numeric > activeItem.max) {
-      if (numeric > activeItem.max) showToast(`不能超过 ${formatScore(activeItem.max)} 分`);
+      if (numeric > activeItem.max) {
+        const message = `该项最高 ${formatScore(activeItem.max)} 分，输入值不能超过 ${formatScore(activeItem.max)} 分`;
+        setKeypadNotice(message);
+        showToast(message, 3600);
+      }
       return false;
     }
-    setDraft(nextValue);
+    updateDraft(nextValue);
+    setKeypadNotice("");
     onScoreChange(activeItem, numeric);
     return true;
   }
 
   function pressKey(key) {
-    if (key === "backspace") { setReplaceOnKey(false); setCurrentValue(activeDraft.slice(0, -1)); return; }
-    if (key === "clear") { setReplaceOnKey(false); setCurrentValue(""); return; }
-    const base = replaceOnKey ? "" : activeDraft;
+    const currentDraft = draftRef.current === "" && value !== "" ? formatScore(value) : draftRef.current;
+    if (key === "backspace") { updateReplaceOnKey(false); setCurrentValue(currentDraft.slice(0, -1)); return; }
+    if (key === "clear") { updateReplaceOnKey(false); setCurrentValue(""); return; }
+    const base = replaceOnKeyRef.current ? "" : currentDraft;
     let next = base;
     if (key === ".") { if (base.includes(".")) return; next = base ? `${base}.` : "0."; }
     else if (base === "0") next = key === "0" ? "0" : key;
     else next = `${base}${key}`;
-    setReplaceOnKey(false);
+    updateReplaceOnKey(false);
     setCurrentValue(next);
   }
 
@@ -2192,8 +3324,9 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
     if (!next) return showToast(direction > 0 ? "已到最后一项" : "已到第一项");
     setActiveScoreId(next.id);
     setSelectedScoreId(next.id);
-    setDraft(entry.scores?.[next.id] === "" ? "" : formatScore(entry.scores?.[next.id]));
-    setReplaceOnKey(true);
+    updateDraft(entry.scores?.[next.id] === "" ? "" : formatScore(entry.scores?.[next.id]));
+    updateReplaceOnKey(true);
+    setKeypadNotice("");
     keepVisible(next.id);
   }
 
@@ -2202,7 +3335,9 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
       const missing = allItems.find((item) => entry.scores?.[item.id] === "");
       if (missing) {
         selectItem(missing);
-        showToast(`还有 ${allItems.length - completed} 项未评分，已定位到 ${missing.title}`, 3200);
+        const message = `还有 ${allItems.length - completed} 项未评分，已定位到 ${missing.title}`;
+        setKeypadNotice(message);
+        showToast(message, 3600);
       }
       return;
     }
@@ -2267,8 +3402,9 @@ function JudgeWorkspace({ account, state, entry, submissionState, syncStatus, lo
         })}
       </section>
       {isKeypadOpen ? <section className="score-pad" data-score-pad id="judge-score-pad" aria-labelledby="judge-score-pad-title" ref={keypadRef} tabIndex={-1}>
-        <div className="score-pad-head"><div><span>当前评分项</span><strong id="judge-score-pad-title" aria-live="polite">{activeItem.title}</strong></div><div className="score-pad-readout" aria-live="polite"><strong>{activeDraft || "--"}</strong></div><button className="score-pad-collapse-button" type="button" onClick={collapseKeypad}><ChevronDown size={18} aria-hidden="true" />收起</button></div>
-        <div className="score-pad-body"><div className="score-pad-keys">{["7", "8", "9", "4", "5", "6", "1", "2", "3", "0", ".", "backspace"].map((key) => <button type="button" key={key} onClick={() => pressKey(key)}>{key === "backspace" ? "退格" : key}</button>)}</div><div className="score-pad-actions"><button type="button" onClick={() => pressKey("clear")}>清空</button><button type="button" disabled={activeIndex === 0} onClick={() => goItem(-1)}>上一项</button><button className="score-pad-next" type="button" disabled={activeIndex === allItems.length - 1} onClick={() => goItem(1)}>下一项</button><button className="score-pad-submit" type="button" disabled={!canScore || isPendingSubmission} onClick={submit}><Send size={17} aria-hidden="true" />{isPendingSubmission ? "提交中" : "提交评分"}</button></div></div>
+        <div className="score-pad-head"><div><span>当前评分项 · 最高 {formatScore(activeItem.max)} 分</span><strong id="judge-score-pad-title" aria-live="polite">{activeItem.title}</strong></div><div className="score-pad-readout" aria-live="polite"><strong>{activeDraft || "--"}</strong></div><button className="score-pad-collapse-button" type="button" onClick={collapseKeypad}><ChevronDown size={18} aria-hidden="true" />收起</button></div>
+        {keypadNotice ? <div className="score-pad-notice" role="alert" aria-live="assertive">{keypadNotice}</div> : null}
+        <div className="score-pad-body"><div className="score-pad-keys">{["7", "8", "9", "4", "5", "6", "1", "2", "3", "0", ".", "backspace"].map((key) => <button type="button" key={key} data-keypad-key={key} aria-label={key === "backspace" ? "退格" : key === "." ? "小数点" : `数字 ${key}`} onClick={() => pressKey(key)}>{key === "backspace" ? "退格" : key}</button>)}</div><div className="score-pad-actions"><button type="button" onClick={() => pressKey("clear")}>清空</button><button type="button" disabled={activeIndex === 0} onClick={() => goItem(-1)}>上一项</button><button className="score-pad-next" type="button" disabled={activeIndex === allItems.length - 1} onClick={() => goItem(1)}>下一项</button><button className="score-pad-submit" type="button" disabled={!canScore || isPendingSubmission} onClick={submit}><Send size={17} aria-hidden="true" />{isPendingSubmission ? "提交中" : "提交评分"}</button></div></div>
       </section> : null}
       {canExpandKeypad ? <button className="score-pad-expand-button" type="button" onClick={expandKeypad} aria-label={`展开${activeItem.title}的虚拟键盘`}><Keyboard size={18} aria-hidden="true" />展开键盘</button> : null}
       <footer className="submit-bar"><button className="ghost-action" type="button" onClick={reset}><RotateCcw size={18} aria-hidden="true" />重置</button><div><span>当前总分</span><strong>{formatScore(total)}</strong></div><button className="primary-action" type="button" disabled={!canScore || isPendingSubmission} onClick={submit}><Send size={18} aria-hidden="true" />{isServerSubmitted ? "已提交" : isPendingSubmission ? "提交中" : "提交评分"}</button></footer>
@@ -2312,11 +3448,27 @@ export function App() {
   const draftsRef = useRef(loadDraftCache());
   const toastTimerRef = useRef(null);
   const deviceIdRef = useRef(loadDeviceId());
-  const appPath = normalizeAppPath(window.location.pathname);
+  const [appPath, setAppPath] = useState(() => normalizeAppPath(window.location.pathname));
   const isScoreboardPage = appPath === SCOREBOARD_RESULTS_PATH;
   const isScoreboardSloganPage = appPath === SCOREBOARD_SLOGAN_PATH;
+  const isScoreboardDemoPage = appPath === SCOREBOARD_DEMO_PATH;
+  const isScoreboardCleanDemoPage = appPath === SCOREBOARD_CLEAN_DEMO_PATH;
+  const isScoreboardTechDemoPage = appPath === SCOREBOARD_TECH_DEMO_PATH;
+  const isScoreboardTechBackupDemoPage = appPath === SCOREBOARD_TECH_BACKUP_DEMO_PATH;
+  const isScoreboardTechNineJudgesDemoPage = appPath === SCOREBOARD_TECH_NINE_JUDGES_DEMO_PATH;
+  const isScoreboardTechTotalExtremesGroupedDemoPage = appPath === SCOREBOARD_TECH_TOTAL_EXTREMES_GROUPED_DEMO_PATH;
+  const isScoreboardPremiumDemoPage = appPath === SCOREBOARD_PREMIUM_DEMO_PATH;
   const isRankingsPage = appPath === "/rankings";
 
+  useEffect(() => {
+    const syncAppPath = () => setAppPath(normalizeAppPath(window.location.pathname));
+    window.addEventListener("popstate", syncAppPath);
+    window.addEventListener(appRouteChangeEvent, syncAppPath);
+    return () => {
+      window.removeEventListener("popstate", syncAppPath);
+      window.removeEventListener(appRouteChangeEvent, syncAppPath);
+    };
+  }, []);
   useEffect(() => { accountRef.current = account; }, [account]);
   useEffect(() => { tokenRef.current = authToken; }, [authToken]);
   useEffect(() => { stateRef.current = serverState; assignmentRef.current = serverState.activeAssignment ?? emptyAssignment; }, [serverState]);
@@ -2530,8 +3682,11 @@ export function App() {
       return true;
     } catch (error) {
       if (!isCurrentContext(context) || !refreshGenerationRef.current.isCurrent(operation) || error.name === "AbortError") return false;
-      if (error.status === 401 || error.status === 403) expireSession(error.message || "登录已失效，请重新登录");
-      else {
+      if (error.status === 401) expireSession(error.message || "登录已失效，请重新登录");
+      else if (error.status === 403) {
+        setSyncStatus({ tone: "online", label: "评分服务器已连接" });
+        if (options.showError) showToast(error.message || "当前账号无权访问该功能", 4200);
+      } else {
         setSyncStatus({ tone: "offline", label: "服务器未连接，当前页面暂存" });
         if (options.showError) showToast("未连接评分服务器，当前评分仅在当前页面暂存，请勿刷新或退出", 4200);
       }
@@ -2628,8 +3783,12 @@ export function App() {
         return { ok: true, submittedConfirmed: submittedSaveConfirmed };
       } catch (error) {
         if (!isCurrentContext(context) || !saveGenerationRef.current.isCurrent(operation) || error.name === "AbortError") return { ok: false, submittedConfirmed: false };
-        if (error.status === 401 || error.status === 403) {
+        if (error.status === 401) {
           expireSession(error.message || "登录已失效，请重新登录");
+        } else if (error.status === 403) {
+          pendingSaveRef.current = null;
+          setJudgeSubmissionState("idle");
+          showToast(error.message || "当前账号无权提交该评分", 4200);
         } else if (error.status === 409) {
           pendingSaveRef.current = null;
           setJudgeSubmissionState("idle");
@@ -2737,7 +3896,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (isScoreboardPage || isScoreboardSloganPage || isRankingsPage || !authToken || account) return undefined;
+    if (isScoreboardPage || isScoreboardSloganPage || isScoreboardDemoPage || isScoreboardCleanDemoPage || isScoreboardTechDemoPage || isScoreboardTechBackupDemoPage || isScoreboardTechNineJudgesDemoPage || isScoreboardTechTotalExtremesGroupedDemoPage || isScoreboardPremiumDemoPage || isRankingsPage || !authToken || account) return undefined;
     const controller = new AbortController();
     sessionRestoreAbortRef.current = controller;
     const restoreEpoch = sessionEpochRef.current;
@@ -2756,8 +3915,11 @@ export function App() {
       } catch (error) {
         if (controller.signal.aborted || restoreEpoch !== sessionEpochRef.current) return;
         setIsRestoringSession(false);
-        if (error.status === 401 || error.status === 403) {
+        if (error.status === 401) {
           expireSession(error.message || "登录已失效，请重新登录");
+        } else if (error.status === 403) {
+          setSyncStatus({ tone: "online", label: "评分服务器已连接" });
+          setSessionRestoreError(error.message || "当前账号无权访问该页面");
         } else {
           setSyncStatus({ tone: "offline", label: "评分服务器未连接" });
           setSessionRestoreError("评分服务器暂时不可用，本地评分草稿仍保留，请重试恢复登录");
@@ -2768,18 +3930,25 @@ export function App() {
       controller.abort();
       if (sessionRestoreAbortRef.current === controller) sessionRestoreAbortRef.current = null;
     };
-  }, [account, authToken, isScoreboardPage, isScoreboardSloganPage, isRankingsPage, restoreAttempt]);
+  }, [account, authToken, isScoreboardPage, isScoreboardSloganPage, isScoreboardDemoPage, isScoreboardCleanDemoPage, isScoreboardTechDemoPage, isScoreboardTechBackupDemoPage, isScoreboardTechNineJudgesDemoPage, isScoreboardTechTotalExtremesGroupedDemoPage, isScoreboardPremiumDemoPage, isRankingsPage, restoreAttempt]);
 
   useEffect(() => {
-    if (!account || isScoreboardPage || isScoreboardSloganPage || isRankingsPage) return undefined;
+    if (!account || isScoreboardPage || isScoreboardSloganPage || isScoreboardDemoPage || isScoreboardCleanDemoPage || isScoreboardTechDemoPage || isScoreboardTechBackupDemoPage || isScoreboardTechNineJudgesDemoPage || isScoreboardTechTotalExtremesGroupedDemoPage || isScoreboardPremiumDemoPage || isRankingsPage) return undefined;
     refresh({ showError: account.role === "admin" });
     const timer = window.setInterval(() => refresh(), 2000);
     return () => window.clearInterval(timer);
-  }, [account?.id, account?.role, isScoreboardPage, isScoreboardSloganPage, isRankingsPage]);
+  }, [account?.id, account?.role, isScoreboardPage, isScoreboardSloganPage, isScoreboardDemoPage, isScoreboardCleanDemoPage, isScoreboardTechDemoPage, isScoreboardTechBackupDemoPage, isScoreboardTechNineJudgesDemoPage, isScoreboardTechTotalExtremesGroupedDemoPage, isScoreboardPremiumDemoPage, isRankingsPage]);
 
-  if (isScoreboardPage) return <ScoreboardPage />;
-  if (isScoreboardSloganPage) return <ScoreboardSloganPage />;
-  if (isRankingsPage) return <RankingsPage />;
+  if (isScoreboardPage) return <ControlledProjectionPage><ScoreboardPage /></ControlledProjectionPage>;
+  if (isScoreboardSloganPage) return <ControlledProjectionPage><ScoreboardSloganPage /></ControlledProjectionPage>;
+  if (isScoreboardDemoPage) return <ScoreboardDemoPage />;
+  if (isScoreboardCleanDemoPage) return <ScoreboardDemoPage variant="clean" />;
+  if (isScoreboardTechDemoPage) return <ScoreboardDemoPage variant="tech" />;
+  if (isScoreboardTechBackupDemoPage) return <ScoreboardDemoPage variant="tech-backup" />;
+  if (isScoreboardTechNineJudgesDemoPage) return <ScoreboardDemoPage variant="tech-nine-judges" />;
+  if (isScoreboardTechTotalExtremesGroupedDemoPage) return <ScoreboardDemoPage variant="tech-total-extremes-grouped" />;
+  if (isScoreboardPremiumDemoPage) return <ScoreboardDemoPage variant="premium" />;
+  if (isRankingsPage) return <ControlledProjectionPage><RankingsPage /></ControlledProjectionPage>;
   if (!account) {
     return <main className="login-shell"><section className="login-panel" aria-label="评分系统登录"><div className="login-copy"><span className="login-kicker">决赛评分表</span><h1>现场评分终端</h1><p>评委与管理员从同一入口登录，现场平板统一提交到共享评分服务器。</p></div><form className="login-form" onSubmit={submitLogin}><div className="login-form-head"><span>{isRestoringSession ? "恢复登录" : "账号验证"}</span><strong>{isRestoringSession ? "正在恢复当前标签页会话" : "请输入账号密码"}</strong></div><label>账号<input name="username" autoComplete="username" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} placeholder="输入账号" /></label><label>密码<input type="password" name="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="输入密码" /></label>{(sessionRestoreError || loginError) ? <div className="login-error" role="alert">{sessionRestoreError || loginError}</div> : null}<div className="login-form-actions">{authToken && sessionRestoreError ? <button className="ghost-action" type="button" onClick={() => setRestoreAttempt((current) => current + 1)}>重试恢复登录</button> : null}<button className="primary-action login-submit" disabled={isLoggingIn} type="submit">{isLoggingIn ? "登录中" : "登录"}</button></div></form></section></main>;
   }

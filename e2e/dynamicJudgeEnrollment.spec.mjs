@@ -62,6 +62,7 @@ async function assertScoreboardGeometry(page, viewport, teamId, judgeCount, admi
 async function captureScoreboardSet(page, teamId, judgeCount, label, adminToken) {
   for (const viewport of [
     { width: 1920, height: 1080, suffix: "1920x1080" },
+    { width: 1080, height: 1080, suffix: "1080x1080" },
     { width: 1366, height: 768, suffix: "1366x768" },
     { width: 1024, height: 768, suffix: "1024x768" },
   ]) {
@@ -86,13 +87,13 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   await expect(page.getByRole("heading", { name: "赛事运营控制" })).toBeVisible();
 
   await page.getByRole("link", { name: "开赛配置", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "统一开赛配置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "分半场开赛配置" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "赛前准备", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "高职组准备状态" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "高职组 · 上半场准备状态" })).toBeVisible();
   await expect(page.locator(".competition-preflight > div > div")).toHaveCount(5);
-  await page.getByRole("button", { name: "开启本组比赛" }).click();
+  await page.getByRole("button", { name: "开启上半场" }).click();
   await expect(page.getByLabel("当前比赛组别")).toHaveValue("gaozhi");
-  await expect(page.getByRole("heading", { name: "等待派发", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "等待派发队伍", exact: true })).toBeVisible();
 
   await page.getByLabel("派发队伍").selectOption("GZ01");
   await page.getByRole("button", { name: "派发首支队伍" }).click();
@@ -162,15 +163,24 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   await judgePage.locator("[data-score-field]").first().click();
   const keypad = judgePage.locator("[data-score-pad]");
   const keypadKey = (label) => keypad.locator(".score-pad-keys button").filter({ hasText: new RegExp(`^${label}$`) });
+  await keypad.getByRole("button", { name: "提交评分" }).click();
+  await expect(keypad.getByRole("alert")).toContainText(`还有 ${allItems.length} 项未评分`);
+  await expect(keypad.getByRole("alert")).toContainText(`已定位到 ${allItems[0].title}`);
   await keypadKey("8").click();
+  await expect(keypad.getByRole("alert")).toHaveCount(0);
   await keypadKey("\\.").click();
   await keypadKey("2").click();
   await keypadKey("5").click();
   await expect(keypad.locator(".score-pad-readout strong")).toHaveText("8.25");
+  await expect(keypad.getByText(new RegExp(`最高 ${allItems[0].max.toFixed(2)} 分`))).toBeVisible();
   await keypad.getByRole("button", { name: "退格" }).click();
   await expect(keypad.locator(".score-pad-readout strong")).toHaveText("8.2");
   await keypad.getByRole("button", { name: "清空" }).click();
   await expect(keypad.locator(".score-pad-readout strong")).toHaveText("--");
+  await keypadKey("8").click({ clickCount: 2, delay: 10 });
+  await expect(keypad.getByRole("alert")).toContainText(`输入值不能超过 ${allItems[0].max.toFixed(2)} 分`);
+  await expect(keypad.locator(".score-pad-readout strong")).toHaveText("8");
+  await keypad.getByRole("button", { name: "清空" }).click();
   await keypadKey("8").click();
   await keypad.getByRole("button", { name: "下一项" }).click();
   await expect(keypad.getByText(allItems[1].title, { exact: true })).toBeVisible();
@@ -347,6 +357,43 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   });
   expect(finalPublish.ok()).toBeTruthy();
   await page.goto(`${baseURL}/?adminView=control`);
+  await expect(page.getByRole("heading", { name: "上半场已完成", exact: true })).toBeVisible({ timeout: 7000 });
+  await page.getByRole("button", { name: "结束上半场，进入中场休息" }).click();
+  await expect(page.getByText("上半场已结束，成绩和总排名已保留，请配置下半场")).toBeVisible();
+
+  state = await (await request.get(`${baseURL}/api/state`, { headers: auth(adminToken) })).json();
+  const saveSecondHalf = await request.put(`${baseURL}/api/competition-setup/gaozhi/second-half`, {
+    headers: auth(adminToken),
+    data: { teamIds: ["GZ02"], revision: state.competitionSetup.groups.gaozhi.revision },
+  });
+  expect(saveSecondHalf.ok()).toBeTruthy();
+  const secondHalfSetupState = await saveSecondHalf.json();
+  const openSecondHalf = await request.post(`${baseURL}/api/competition-setup/gaozhi/second-half/open`, {
+    headers: auth(adminToken),
+    data: { revision: secondHalfSetupState.competitionSetup.groups.gaozhi.revision },
+  });
+  expect(openSecondHalf.ok()).toBeTruthy();
+  const secondHalfOpenState = await openSecondHalf.json();
+  const secondHalfDispatch = await request.post(`${baseURL}/api/assignments/dispatch`, {
+    headers: auth(adminToken),
+    data: { teamId: "GZ02", revision: secondHalfOpenState.activeAssignment.assignmentRevision },
+  });
+  expect(secondHalfDispatch.ok()).toBeTruthy();
+  const secondHalfAssignment = (await secondHalfDispatch.json()).activeAssignment;
+  for (const judgeId of secondHalfAssignment.rosterSnapshot) {
+    const response = await request.put(`${baseURL}/api/entries/${judgeId}/GZ02`, {
+      headers: auth(adminToken),
+      data: { entry: submittedEntry(8) },
+    });
+    expect(response.ok()).toBeTruthy();
+  }
+  state = await (await request.get(`${baseURL}/api/state`, { headers: auth(adminToken) })).json();
+  const secondHalfPublish = await request.put(`${baseURL}/api/display-selection`, {
+    headers: auth(adminToken),
+    data: { teamId: "GZ02", publicationStatus: "final", revision: state.displaySelection.displayRevision },
+  });
+  expect(secondHalfPublish.ok()).toBeTruthy();
+  await page.goto(`${baseURL}/?adminView=control`);
   await expect(page.getByRole("heading", { name: "待结束赛次", exact: true })).toBeVisible({ timeout: 7000 });
   await page.getByRole("button", { name: "结束本组比赛" }).click();
   await expect(page.getByText("高职组比赛已结束，赛次已锁定")).toBeVisible();
@@ -374,7 +421,7 @@ test("赛中新增第八位评委从下一队生效并适配投屏", async ({ pa
   const rankingPagePromise = page.context().waitForEvent("page");
   await page.getByRole("button", { name: "查看本组排名" }).click();
   const rankingPage = await rankingPagePromise;
-  await rankingPage.waitForLoadState("domcontentloaded");
+  await rankingPage.waitForURL(/\/rankings\?groupId=gaozhi/, { waitUntil: "domcontentloaded" });
   expect(rankingPage.url()).toContain("/rankings?groupId=gaozhi");
   await expect(rankingPage.getByText("高职组").first()).toBeVisible();
   await rankingPage.close();
