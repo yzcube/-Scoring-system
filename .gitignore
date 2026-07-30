@@ -1,3 +1,9 @@
 test/
 node_modules/
 .env
+data/contest-sessions.json
+data/contest-sessions.json.*.tmp
+data/logs/
+outputs/
+qa-artifacts/
+snapshots/

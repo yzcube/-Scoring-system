@@ -7,9 +7,13 @@ import {
   scoreScale,
 } from "../shared/scoringRules.js";
 import {
+  advanceDisplayRankingTransition,
+  advanceDisplayToNextTeam,
+  advanceDisplayToPreviousTeam,
   closeCompetitionGroup,
   dispatchAssignment,
   enrollJudgeForFutureAssignments,
+  finishCompetitionFirstHalf,
   getAccountById,
   getJudgeAccounts,
   getTeamById,
@@ -19,7 +23,11 @@ import {
   reopenCompetitionGroupForSetup,
   replaceAssignmentJudge,
   saveCompetitionGroupSetup,
+  saveCompetitionSecondHalf,
+  showDisplayRankings,
+  openCompetitionSecondHalf,
   startJudgeRescore,
+  updateDisplayRankingAnimation,
   updatePlannedRoster,
   writeScoreEntry,
 } from "../domain/contestControl.js";
@@ -113,7 +121,127 @@ export function createContestApiRoutes({
     if (conflict) throw new HttpError(409, "报名编号已绑定其他队伍，请先核对编号");
   }
 
+  function assertPublicProjectionMutationRequest(request) {
+    const contentType = String(request.headers["content-type"] ?? "")
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== "application/json") {
+      throw new HttpError(415, "大屏控制请求必须使用 JSON");
+    }
+
+    const fetchSite = String(request.headers["sec-fetch-site"] ?? "").trim().toLowerCase();
+    if (fetchSite && fetchSite !== "same-origin") {
+      throw new HttpError(403, "拒绝跨站大屏控制请求");
+    }
+
+    const origin = String(request.headers.origin ?? "").trim();
+    if (!origin) return;
+    try {
+      const originUrl = new URL(origin);
+      const requestHost = String(request.headers.host ?? "").trim().toLowerCase();
+      if (
+        !["http:", "https:"].includes(originUrl.protocol) ||
+        !requestHost ||
+        originUrl.host.toLowerCase() !== requestHost
+      ) {
+        throw new Error("origin mismatch");
+      }
+    } catch {
+      throw new HttpError(403, "拒绝跨站大屏控制请求");
+    }
+  }
+
   return async function handleContestApi(request, response, url) {
+    if (request.method === "POST" && url.pathname === "/api/projection/advance") {
+      request.audit.action = "projection_advance";
+      assertPublicProjectionMutationRequest(request);
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) => advanceDisplayRankingTransition(state, {
+          transitionRevision: body.transitionRevision,
+        }),
+        null,
+        [],
+      );
+      request.audit.target = { transitionRevision: body.transitionRevision };
+      request.audit.details = {
+        operation: "projection_ranking_advance",
+        changed: outcome.changed,
+        displayRevision: nextState.displaySelection.displayRevision,
+      };
+      request.audit.outcome = outcome.changed ? "advanced" : "already_advanced";
+      sendJson(response, 200, {
+        ok: true,
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/projection/next") {
+      request.audit.action = "projection_next_team";
+      assertPublicProjectionMutationRequest(request);
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) => advanceDisplayToNextTeam(state, {
+          expectedRevision: body.displayRevision,
+        }),
+        null,
+        [],
+      );
+      request.audit.target = {
+        fromTeamId: outcome.fromTeamId,
+        toTeamId: outcome.toTeamId,
+      };
+      request.audit.details = {
+        operation: "projection_team_advance",
+        changed: outcome.changed,
+        reason: outcome.reason,
+        publicationStatus: outcome.publicationStatus,
+        displayRevision: nextState.displaySelection.displayRevision,
+      };
+      request.audit.outcome = outcome.changed ? "advanced" : "end_of_group";
+      sendJson(response, 200, {
+        ok: true,
+        changed: outcome.changed,
+        reason: outcome.reason,
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/projection/previous") {
+      request.audit.action = "projection_previous_team";
+      assertPublicProjectionMutationRequest(request);
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) => advanceDisplayToPreviousTeam(state, {
+          expectedRevision: body.displayRevision,
+        }),
+        null,
+        [],
+      );
+      request.audit.target = {
+        fromTeamId: outcome.fromTeamId,
+        toTeamId: outcome.toTeamId,
+      };
+      request.audit.details = {
+        operation: "projection_team_previous",
+        changed: outcome.changed,
+        reason: outcome.reason,
+        publicationStatus: outcome.publicationStatus,
+        displayRevision: nextState.displaySelection.displayRevision,
+      };
+      request.audit.outcome = outcome.changed ? "rewound" : "start_of_group";
+      sendJson(response, 200, {
+        ok: true,
+        changed: outcome.changed,
+        reason: outcome.reason,
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
     if (
       request.method === "POST" &&
       url.pathname === "/api/admin/judge-rescores"
@@ -163,6 +291,126 @@ export function createContestApiRoutes({
         entry: outcome.persistedEntry,
         activeAssignment: publicAssignment(nextState.activeAssignment),
         displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
+    if (
+      request.method === "POST" &&
+      url.pathname.startsWith("/api/competition-setup/") &&
+      url.pathname.endsWith("/first-half/finish")
+    ) {
+      request.audit.action = "competition_first_half_finish";
+      const session = await requireSession(request, ["admin"]);
+      const pathParts = url.pathname.split("/");
+      if (pathParts.length !== 6) return false;
+      const groupId = sanitizeGroupId(pathParts[3]);
+      if (!isKnownGroupId(pathParts[3])) throw new HttpError(404, "未知组别");
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) =>
+          finishCompetitionFirstHalf(state, {
+            groupId,
+            expectedRevision: body.revision,
+            actorId: session.accountId,
+          }),
+        session,
+        ["admin"],
+      );
+      request.audit.target = { groupId, half: "first" };
+      request.audit.details = {
+        operation: "finish_first_half",
+        teamCount: outcome.completedSetup.halves.first.teamIds.length,
+        cumulativeTeamCount: outcome.completedSetup.teamIds.length,
+        scoresPreserved: true,
+        displayHistoryPreserved: true,
+      };
+      request.audit.outcome = "intermission";
+      sendJson(response, 200, {
+        ok: true,
+        competitionSetup: nextState.competitionSetup,
+        judgeRoster: publicJudgeRoster(nextState.judgeRoster),
+        activeAssignment: publicAssignment(nextState.activeAssignment),
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
+    if (
+      request.method === "PUT" &&
+      url.pathname.startsWith("/api/competition-setup/") &&
+      url.pathname.endsWith("/second-half")
+    ) {
+      request.audit.action = "competition_second_half_setup_write";
+      const session = await requireSession(request, ["admin"]);
+      const pathParts = url.pathname.split("/");
+      if (pathParts.length !== 5) return false;
+      const groupId = sanitizeGroupId(pathParts[3]);
+      if (!isKnownGroupId(pathParts[3])) throw new HttpError(404, "未知组别");
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) =>
+          saveCompetitionSecondHalf(state, {
+            groupId,
+            teamIds: body.teamIds,
+            expectedRevision: body.revision,
+            actorId: session.accountId,
+          }),
+        session,
+        ["admin"],
+      );
+      request.audit.target = { groupId, half: "second" };
+      request.audit.details = {
+        operation: "save_second_half_setup",
+        previousTeamCount: outcome.previousSetup.halves.second.teamIds.length,
+        nextTeamCount: outcome.nextSetup.halves.second.teamIds.length,
+        cumulativeTeamCount: outcome.nextSetup.teamIds.length,
+        scoresPreserved: true,
+      };
+      request.audit.outcome = "saved";
+      sendJson(response, 200, {
+        ok: true,
+        competitionSetup: nextState.competitionSetup,
+      });
+      return true;
+    }
+
+    if (
+      request.method === "POST" &&
+      url.pathname.startsWith("/api/competition-setup/") &&
+      url.pathname.endsWith("/second-half/open")
+    ) {
+      request.audit.action = "competition_second_half_open";
+      const session = await requireSession(request, ["admin"]);
+      const pathParts = url.pathname.split("/");
+      if (pathParts.length !== 6) return false;
+      const groupId = sanitizeGroupId(pathParts[3]);
+      if (!isKnownGroupId(pathParts[3])) throw new HttpError(404, "未知组别");
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) =>
+          openCompetitionSecondHalf(state, {
+            groupId,
+            expectedRevision: body.revision,
+            actorId: session.accountId,
+          }),
+        session,
+        ["admin"],
+      );
+      request.audit.target = { groupId, half: "second" };
+      request.audit.details = {
+        operation: "open_second_half",
+        halfTeamCount: outcome.openedSetup.halves.second.teamIds.length,
+        cumulativeTeamCount: outcome.openedSetup.teamIds.length,
+        judgeCount: outcome.openedSetup.judgeIds.length,
+        scoresPreserved: true,
+      };
+      request.audit.outcome = "opened";
+      sendJson(response, 200, {
+        ok: true,
+        competitionSetup: nextState.competitionSetup,
+        judgeRoster: publicJudgeRoster(nextState.judgeRoster),
+        activeAssignment: publicAssignment(nextState.activeAssignment),
       });
       return true;
     }
@@ -491,6 +739,17 @@ export function createContestApiRoutes({
             state.competitionSetup.groups[team.groupId] = {
               ...setup,
               teamIds: setup.teamIds.filter((id) => id !== teamId),
+              halves: {
+                ...setup.halves,
+                first: {
+                  ...setup.halves?.first,
+                  teamIds: (setup.halves?.first?.teamIds ?? setup.teamIds).filter((id) => id !== teamId),
+                },
+                second: {
+                  ...setup.halves?.second,
+                  teamIds: (setup.halves?.second?.teamIds ?? []).filter((id) => id !== teamId),
+                },
+              },
               revision: setup.revision + 1,
               updatedAt: now,
               updatedBy: session.accountId,
@@ -498,13 +757,31 @@ export function createContestApiRoutes({
             state.competitionSetup.revision += 1;
             setupChanged = true;
           }
-          if (state.displaySelection.teamId === teamId) {
+          const revealedTeamIdsByGroup = Object.fromEntries(
+            Object.entries(state.displaySelection.revealedTeamIdsByGroup ?? {}).map(([groupId, teamIds]) => [
+              groupId,
+              Array.isArray(teamIds) ? teamIds.filter((id) => id !== teamId) : [],
+            ]),
+          );
+          const removedFromRankingHistory = Object.values(state.displaySelection.revealedTeamIdsByGroup ?? {})
+            .some((teamIds) => Array.isArray(teamIds) && teamIds.includes(teamId));
+          const transitionReferencesTeam = [
+            state.displaySelection.rankingTransition?.fromTeamId,
+            state.displaySelection.rankingTransition?.toTeamId,
+          ].includes(teamId) || state.displaySelection.rankingTransition?.teamIds?.includes(teamId);
+          const withdrawsCurrentDisplay = state.displaySelection.teamId === teamId;
+          if (withdrawsCurrentDisplay || removedFromRankingHistory || transitionReferencesTeam) {
             state.displaySelection = {
-              teamId: null,
-              publicationStatus: "idle",
+              ...state.displaySelection,
+              teamId: withdrawsCurrentDisplay ? null : state.displaySelection.teamId,
+              publicationStatus: withdrawsCurrentDisplay ? "idle" : state.displaySelection.publicationStatus,
               displayRevision: state.displaySelection.displayRevision + 1,
-              publishedAt: "",
+              publishedAt: withdrawsCurrentDisplay ? "" : state.displaySelection.publishedAt,
               updatedAt: now,
+              revealedTeamIdsByGroup,
+              rankingTransition: withdrawsCurrentDisplay || transitionReferencesTeam
+                ? null
+                : state.displaySelection.rankingTransition,
             };
             displayInvalidated = true;
           }
@@ -587,7 +864,7 @@ export function createContestApiRoutes({
           team.updatedAt = new Date().toISOString();
           displayInvalidated =
             nextStatus !== "active" &&
-            invalidateDisplayForReview(state, teamId);
+            invalidateDisplayForReview(state, teamId, undefined, { includeTemporary: true });
           return state;
         },
         () => ({ type: "team", teamId, displayInvalidated }),
@@ -1040,6 +1317,60 @@ export function createContestApiRoutes({
         ok: true,
         displaySelection: publicDisplaySelection(nextState.displaySelection),
         ...getScoreboardPayload(nextState),
+      });
+      return true;
+    }
+
+    if (request.method === "PUT" && url.pathname === "/api/display-settings") {
+      request.audit.action = "display_ranking_animation_update";
+      const session = await requireSession(request, ["admin"]);
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) =>
+          updateDisplayRankingAnimation(state, {
+            enabled: body.rankingAnimationEnabled,
+            expectedRevision: body.revision,
+          }),
+        session,
+        ["admin"],
+      );
+      request.audit.target = { setting: "rankingAnimationEnabled" };
+      request.audit.details = {
+        operation: "display_ranking_animation_update",
+        previousEnabled: outcome.previousSelection.rankingAnimationEnabled === true,
+        savedEnabled: nextState.displaySelection.rankingAnimationEnabled === true,
+        displayRevision: nextState.displaySelection.displayRevision,
+      };
+      request.audit.outcome = outcome.changed ? "saved" : "unchanged";
+      sendJson(response, 200, {
+        ok: true,
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
+      });
+      return true;
+    }
+
+    if (request.method === "PUT" && url.pathname === "/api/display-view") {
+      request.audit.action = "display_view_update";
+      const session = await requireSession(request, ["admin"]);
+      const body = await readJsonBody(request);
+      const { state: nextState, outcome } = await applyContestControl(
+        (state) => showDisplayRankings(state, {
+          groupId: sanitizeGroupId(body.groupId),
+          expectedRevision: body.revision,
+        }),
+        session,
+        ["admin"],
+      );
+      request.audit.target = { groupId: nextState.displaySelection.rankingGroupId };
+      request.audit.details = {
+        operation: "display_show_rankings",
+        previous: publicDisplaySelection(outcome.previousSelection),
+        saved: publicDisplaySelection(nextState.displaySelection),
+      };
+      request.audit.outcome = "saved";
+      sendJson(response, 200, {
+        ok: true,
+        displaySelection: publicDisplaySelection(nextState.displaySelection),
       });
       return true;
     }

@@ -5,6 +5,12 @@ import {
   getEntryTotalCents,
   sanitizeEntry,
 } from "../shared/scoringRules.js";
+import {
+  getActiveCompetitionHalfTeamIds,
+  getCompetitionHalfTeamIds,
+  getCompetitionRankingScope,
+  getOrderedSetupTeams,
+} from "../shared/competitionSetup.js";
 
 export class ContestControlError extends Error {
   constructor(status, message) {
@@ -39,6 +45,52 @@ function cleanReason(value) {
   return typeof value === "string" ? value.trim().slice(0, 500) : "";
 }
 
+const displayRankingTransitionIntroMs = 250;
+const displayRankingTransitionHoldMs = 1500;
+const displayRankingTransitionPerPositionMs = 260;
+
+function getDisplayRankingTransitionDurationMs(state, groupId, teamIds, currentTeamId) {
+  const scopedTeamIds = new Set(Array.isArray(teamIds) ? teamIds : []);
+  const rankedTeams = getOrderedSetupTeams(state, groupId)
+    .filter((team) => scopedTeamIds.has(team.id))
+    .map((team) => {
+      const summary = getCompositeSummary(state, team.id);
+      return {
+        id: team.id,
+        appearanceOrder: team.appearanceOrder,
+        scoreValue: summary.display === "--" ? null : Number(summary.display),
+      };
+    })
+    .sort((left, right) => {
+      const leftScore = left.scoreValue ?? -1;
+      const rightScore = right.scoreValue ?? -1;
+      return rightScore - leftScore || left.appearanceOrder - right.appearanceOrder || left.id.localeCompare(right.id);
+    });
+  const finalIndex = rankedTeams.findIndex((team) => team.id === currentTeamId);
+  const crossedPositions = finalIndex < 0 ? 0 : Math.max(0, rankedTeams.length - 1 - finalIndex);
+  const travelMs = crossedPositions * displayRankingTransitionPerPositionMs;
+  return displayRankingTransitionIntroMs + travelMs + displayRankingTransitionHoldMs;
+}
+
+function cloneRevealedTeamIdsByGroup(selection) {
+  const source = selection?.revealedTeamIdsByGroup;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+  return Object.fromEntries(
+    Object.entries(source).map(([groupId, teamIds]) => [
+      groupId,
+      Array.isArray(teamIds) ? [...new Set(teamIds.filter((id) => typeof id === "string" && id))] : [],
+    ]),
+  );
+}
+
+function isRankingTransitionActive(selection) {
+  const transition = selection?.rankingTransition;
+  return Boolean(
+    selection?.rankingAnimationEnabled === true &&
+      transition,
+  );
+}
+
 function getRescoreAssignments(assignment) {
   return assignment?.rescoreAssignmentsByJudge &&
     typeof assignment.rescoreAssignmentsByJudge === "object" &&
@@ -62,6 +114,58 @@ function getCompetitionGroupSetup(state, groupId) {
   return state.competitionSetup?.groups?.[groupId] ?? null;
 }
 
+function cloneCompetitionGroupSetup(setup) {
+  return {
+    ...setup,
+    teamIds: [...(setup?.teamIds ?? [])],
+    judgeIds: [...(setup?.judgeIds ?? [])],
+    halves: {
+      first: {
+        ...(setup?.halves?.first ?? {}),
+        teamIds: getCompetitionHalfTeamIds(setup, "first"),
+      },
+      second: {
+        ...(setup?.halves?.second ?? {}),
+        teamIds: getCompetitionHalfTeamIds(setup, "second"),
+      },
+    },
+  };
+}
+
+function getEligibleCompetitionTeamIds(state, groupId) {
+  return new Set(
+    state.teams
+      .filter((team) => team.groupId === groupId && team.status === "active")
+      .map((team) => team.id),
+  );
+}
+
+function validateCompetitionTeamSelection(state, groupId, teamIds, { excludedTeamIds = [] } = {}) {
+  if (!Array.isArray(teamIds)) fail(400, "参赛队伍配置异常");
+  const eligibleTeamIds = getEligibleCompetitionTeamIds(state, groupId);
+  const excluded = new Set(excludedTeamIds);
+  const normalizedTeamIds = teamIds.filter(
+    (id) => typeof id === "string" && eligibleTeamIds.has(id) && !excluded.has(id),
+  );
+  if (
+    normalizedTeamIds.length !== teamIds.length ||
+    new Set(normalizedTeamIds).size !== normalizedTeamIds.length
+  ) {
+    fail(400, excluded.size
+      ? "下半场队伍必须属于当前组别、正常参赛、不能重复，也不能与上半场重叠"
+      : "开赛队伍必须属于当前组别、正常参赛且不能重复");
+  }
+  if (!normalizedTeamIds.length) fail(400, "每个半场至少需要一支参赛队伍");
+  return normalizedTeamIds;
+}
+
+function assertTeamInformationReady(state, teamIds, message) {
+  const incompleteTeam = teamIds
+    .map((teamId) => getTeamById(state, teamId))
+    .find((team) => !team?.teamName?.trim() || !team?.registrationNumber?.trim());
+  if (incompleteTeam) fail(409, message);
+}
+
 export function saveCompetitionGroupSetup(
   state,
   {
@@ -81,11 +185,7 @@ export function saveCompetitionGroupSetup(
   if (!Array.isArray(teamIds) || !Array.isArray(judgeIds)) {
     fail(400, "开赛队伍或评委配置异常");
   }
-  const eligibleTeamIds = new Set(
-    state.teams
-      .filter((team) => team.groupId === groupId && team.status === "active")
-      .map((team) => team.id),
-  );
+  const eligibleTeamIds = getEligibleCompetitionTeamIds(state, groupId);
   const eligibleJudgeIds = new Set(
     getJudgeAccounts(state)
       .filter((account) => account.status === "active")
@@ -112,11 +212,26 @@ export function saveCompetitionGroupSetup(
   }
   if (normalizedJudgeIds.length < 3) fail(400, "每场比赛至少需要 3 位启用评委");
 
-  const previousSetup = { ...setup, teamIds: [...setup.teamIds], judgeIds: [...setup.judgeIds] };
+  const previousSetup = cloneCompetitionGroupSetup(setup);
   state.competitionSetup.groups[groupId] = {
     ...setup,
     teamIds: normalizedTeamIds,
     judgeIds: normalizedJudgeIds,
+    activeHalf: null,
+    halves: {
+      first: {
+        status: "draft",
+        teamIds: [...normalizedTeamIds],
+        openedAt: "",
+        closedAt: "",
+      },
+      second: {
+        status: "draft",
+        teamIds: [],
+        openedAt: "",
+        closedAt: "",
+      },
+    },
     revision: setup.revision + 1,
     updatedAt: now,
     updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
@@ -147,20 +262,15 @@ export function openCompetitionGroup(
   assertExpectedRevision(expectedRevision, setup.revision, "开赛配置已被其他管理员更新，请刷新后重试");
   if (!setup.teamIds.length) fail(400, "请至少选择一支参赛队伍后再开赛");
   if (setup.judgeIds.length < 3) fail(400, "请至少选择 3 位启用评委后再开赛");
-  const eligibleTeamIds = new Set(
-    state.teams
-      .filter((team) => team.groupId === groupId && team.status === "active")
-      .map((team) => team.id),
-  );
+  const eligibleTeamIds = getEligibleCompetitionTeamIds(state, groupId);
   if (setup.teamIds.some((teamId) => !eligibleTeamIds.has(teamId))) {
     fail(409, "开赛配置中的队伍状态已变化，请重新核对本场参赛队伍");
   }
-  const incompleteTeam = setup.teamIds
-    .map((teamId) => getTeamById(state, teamId))
-    .find((team) => !team?.teamName?.trim() || !team?.registrationNumber?.trim());
-  if (incompleteTeam) {
-    fail(409, "开赛队伍缺少报名编号或队伍名称，请先在队伍管理中补全资料");
-  }
+  assertTeamInformationReady(
+    state,
+    setup.teamIds,
+    "开赛队伍缺少报名编号或队伍名称，请先在队伍管理中补全资料",
+  );
   const eligibleJudgeIds = new Set(
     getJudgeAccounts(state)
       .filter((account) => account.status === "active")
@@ -192,6 +302,21 @@ export function openCompetitionGroup(
   state.competitionSetup.groups[groupId] = {
     ...setup,
     status: "open",
+    activeHalf: "first",
+    halves: {
+      first: {
+        status: "open",
+        teamIds: [...setup.teamIds],
+        openedAt: now,
+        closedAt: "",
+      },
+      second: {
+        status: "draft",
+        teamIds: [],
+        openedAt: "",
+        closedAt: "",
+      },
+    },
     revision: setup.revision + 1,
     openedAt: now,
     closedAt: "",
@@ -232,6 +357,227 @@ export function openCompetitionGroup(
   };
 }
 
+export function finishCompetitionFirstHalf(
+  state,
+  {
+    groupId,
+    expectedRevision,
+    actorId = "",
+    now = new Date().toISOString(),
+  },
+) {
+  const setup = getCompetitionGroupSetup(state, groupId);
+  if (!setup) fail(404, "未知比赛组别");
+  if (
+    setup.status !== "open" ||
+    state.competitionSetup.activeGroupId !== groupId ||
+    setup.activeHalf !== "first" ||
+    setup.halves?.first?.status !== "open"
+  ) {
+    fail(409, "只有正在进行的上半场可以结束");
+  }
+  assertExpectedRevision(expectedRevision, setup.revision, "半场状态已被其他管理员更新，请刷新后重试");
+  const assignment = state.activeAssignment;
+  if (Object.keys(getRescoreAssignments(assignment)).length) {
+    fail(409, "仍有指定评委的历史重评任务未完成，不能结束上半场");
+  }
+  if (
+    assignment.groupId === groupId &&
+    assignment.teamId &&
+    !["final", "closed"].includes(assignment.status)
+  ) {
+    fail(409, "当前派发评分尚未完成，不能结束上半场");
+  }
+  const firstHalfTeamIds = getCompetitionHalfTeamIds(setup, "first");
+  const unresolvedTeams = firstHalfTeamIds.filter((teamId) => {
+    const team = getTeamById(state, teamId);
+    return !team || (team.status === "active" && !getCompositeSummary(state, teamId).isFinal);
+  });
+  if (unresolvedTeams.length) {
+    fail(409, `上半场仍有 ${unresolvedTeams.length} 支未完成队伍，不能进入中场休息`);
+  }
+  const previousSetup = cloneCompetitionGroupSetup(setup);
+  const previousAssignment = { ...assignment, rosterSnapshot: [...assignment.rosterSnapshot] };
+  state.competitionSetup.groups[groupId] = {
+    ...setup,
+    activeHalf: null,
+    halves: {
+      ...setup.halves,
+      first: {
+        ...setup.halves.first,
+        status: "closed",
+        closedAt: now,
+      },
+    },
+    revision: setup.revision + 1,
+    updatedAt: now,
+    updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
+  };
+  state.competitionSetup.revision += 1;
+  state.judgeRoster = {
+    ...state.judgeRoster,
+    revision: state.judgeRoster.revision + 1,
+    lockedAt: "",
+    effectiveMode: "next_assignment",
+    reason: "上半场结束，等待下半场",
+    updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
+    updatedAt: now,
+  };
+  state.activeAssignment = {
+    groupId,
+    teamId: null,
+    status: "idle",
+    assignmentRevision: assignment.assignmentRevision + 1,
+    rosterRevision: clampInteger(assignment.rosterRevision) + 1,
+    rosterSnapshot: [],
+    rescoreRevision: clampInteger(assignment.rescoreRevision),
+    rescoreAssignmentsByJudge: {},
+    updatedAt: now,
+    forcedReason: "",
+  };
+  return {
+    previousSetup,
+    completedSetup: state.competitionSetup.groups[groupId],
+    previousAssignment,
+    mutation: { type: "competition_setup", operation: "finish_first_half" },
+  };
+}
+
+export function saveCompetitionSecondHalf(
+  state,
+  {
+    groupId,
+    teamIds,
+    expectedRevision,
+    actorId = "",
+    now = new Date().toISOString(),
+  },
+) {
+  const setup = getCompetitionGroupSetup(state, groupId);
+  if (!setup) fail(404, "未知比赛组别");
+  if (
+    setup.status !== "open" ||
+    state.competitionSetup.activeGroupId !== groupId ||
+    setup.activeHalf !== null ||
+    setup.halves?.first?.status !== "closed" ||
+    setup.halves?.second?.status !== "draft"
+  ) {
+    fail(409, "只能在上半场结束后的中场休息期间配置下半场");
+  }
+  assertExpectedRevision(expectedRevision, setup.revision, "下半场配置已被其他管理员更新，请刷新后重试");
+  const firstHalfTeamIds = getCompetitionHalfTeamIds(setup, "first");
+  const normalizedTeamIds = validateCompetitionTeamSelection(state, groupId, teamIds, {
+    excludedTeamIds: firstHalfTeamIds,
+  });
+  const previousSetup = cloneCompetitionGroupSetup(setup);
+  state.competitionSetup.groups[groupId] = {
+    ...setup,
+    teamIds: [...firstHalfTeamIds, ...normalizedTeamIds],
+    halves: {
+      ...setup.halves,
+      second: {
+        ...setup.halves.second,
+        status: "draft",
+        teamIds: [...normalizedTeamIds],
+        openedAt: "",
+        closedAt: "",
+      },
+    },
+    revision: setup.revision + 1,
+    updatedAt: now,
+    updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
+  };
+  state.competitionSetup.revision += 1;
+  return {
+    previousSetup,
+    nextSetup: state.competitionSetup.groups[groupId],
+    mutation: { type: "competition_setup", operation: "save_second_half" },
+  };
+}
+
+export function openCompetitionSecondHalf(
+  state,
+  {
+    groupId,
+    expectedRevision,
+    actorId = "",
+    now = new Date().toISOString(),
+  },
+) {
+  const setup = getCompetitionGroupSetup(state, groupId);
+  if (!setup) fail(404, "未知比赛组别");
+  if (
+    setup.status !== "open" ||
+    state.competitionSetup.activeGroupId !== groupId ||
+    setup.activeHalf !== null ||
+    setup.halves?.first?.status !== "closed" ||
+    setup.halves?.second?.status !== "draft"
+  ) {
+    fail(409, "当前状态不能开启下半场");
+  }
+  assertExpectedRevision(expectedRevision, setup.revision, "下半场配置已被其他管理员更新，请刷新后重试");
+  const secondHalfTeamIds = getCompetitionHalfTeamIds(setup, "second");
+  if (!secondHalfTeamIds.length) fail(400, "请先选择并保存下半场参赛队伍");
+  const eligibleTeamIds = getEligibleCompetitionTeamIds(state, groupId);
+  if (secondHalfTeamIds.some((teamId) => !eligibleTeamIds.has(teamId))) {
+    fail(409, "下半场配置中的队伍状态已变化，请重新核对参赛队伍");
+  }
+  assertTeamInformationReady(
+    state,
+    secondHalfTeamIds,
+    "下半场队伍缺少报名编号或队伍名称，请先在队伍管理中补全资料",
+  );
+  const activeRoster = getActiveRoster(state);
+  if (activeRoster.length < 3) fail(409, "下半场至少需要 3 位启用评委");
+  const assignment = state.activeAssignment;
+  if (assignment.teamId || Object.keys(getRescoreAssignments(assignment)).length) {
+    fail(409, "仍有未结束的评分或重评任务，不能开启下半场");
+  }
+  state.competitionSetup.groups[groupId] = {
+    ...setup,
+    judgeIds: [...activeRoster],
+    activeHalf: "second",
+    halves: {
+      ...setup.halves,
+      second: {
+        ...setup.halves.second,
+        status: "open",
+        openedAt: now,
+        closedAt: "",
+      },
+    },
+    revision: setup.revision + 1,
+    updatedAt: now,
+    updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
+  };
+  state.competitionSetup.revision += 1;
+  state.judgeRoster = {
+    ...state.judgeRoster,
+    judgeIds: [...activeRoster],
+    revision: state.judgeRoster.revision + 1,
+    lockedAt: "",
+    effectiveMode: "next_assignment",
+    reason: "开启下半场",
+    updatedBy: typeof actorId === "string" ? actorId.slice(0, 32) : "",
+    updatedAt: now,
+  };
+  state.activeAssignment = {
+    ...assignment,
+    groupId,
+    teamId: null,
+    status: "idle",
+    assignmentRevision: assignment.assignmentRevision + 1,
+    rosterRevision: clampInteger(assignment.rosterRevision) + 1,
+    rosterSnapshot: [],
+    updatedAt: now,
+    forcedReason: "",
+  };
+  return {
+    openedSetup: state.competitionSetup.groups[groupId],
+    mutation: { type: "competition_setup", operation: "open_second_half" },
+  };
+}
+
 export function closeCompetitionGroup(
   state,
   {
@@ -245,6 +591,9 @@ export function closeCompetitionGroup(
   if (!setup) fail(404, "未知比赛组别");
   if (setup.status !== "open" || state.competitionSetup.activeGroupId !== groupId) {
     fail(409, "只有当前已开启组别可以结束比赛");
+  }
+  if (setup.activeHalf !== "second" || setup.halves?.second?.status !== "open") {
+    fail(409, "请先结束上半场并开启下半场，再结束本组比赛");
   }
   assertExpectedRevision(expectedRevision, setup.revision, "开赛配置已被其他管理员更新，请刷新后重试");
   const assignment = state.activeAssignment;
@@ -265,11 +614,20 @@ export function closeCompetitionGroup(
   if (unresolvedTeams.length) {
     fail(409, `本组仍有 ${unresolvedTeams.length} 支未完成队伍，不能结束比赛`);
   }
-  const previousSetup = { ...setup, teamIds: [...setup.teamIds], judgeIds: [...setup.judgeIds] };
+  const previousSetup = cloneCompetitionGroupSetup(setup);
   const previousAssignment = { ...assignment, rosterSnapshot: [...assignment.rosterSnapshot] };
   state.competitionSetup.groups[groupId] = {
     ...setup,
     status: "closed",
+    activeHalf: null,
+    halves: {
+      ...setup.halves,
+      second: {
+        ...setup.halves.second,
+        status: "closed",
+        closedAt: now,
+      },
+    },
     revision: setup.revision + 1,
     closedAt: now,
     updatedAt: now,
@@ -365,6 +723,21 @@ export function reopenCompetitionGroupForSetup(
   state.competitionSetup.groups[groupId] = {
     ...setup,
     status: "draft",
+    activeHalf: null,
+    halves: {
+      first: {
+        status: "draft",
+        teamIds: [...setup.teamIds],
+        openedAt: "",
+        closedAt: "",
+      },
+      second: {
+        status: "draft",
+        teamIds: [],
+        openedAt: "",
+        closedAt: "",
+      },
+    },
     revision: setup.revision + 1,
     openedAt: "",
     closedAt: "",
@@ -406,13 +779,23 @@ export function reopenCompetitionGroupForSetup(
     };
   }
   let displayChanged = false;
-  if (groupTeamIdSet.has(state.displaySelection.teamId)) {
+  const revealedTeamIdsByGroup = cloneRevealedTeamIdsByGroup(state.displaySelection);
+  const hadRevealedTeams = Boolean(revealedTeamIdsByGroup[groupId]?.length);
+  if (hadRevealedTeams) revealedTeamIdsByGroup[groupId] = [];
+  const transitionBelongsToGroup = state.displaySelection.rankingTransition?.groupId === groupId;
+  if (groupTeamIdSet.has(state.displaySelection.teamId) || hadRevealedTeams || transitionBelongsToGroup) {
+    const shouldWithdrawDisplay = groupTeamIdSet.has(state.displaySelection.teamId);
     state.displaySelection = {
-      teamId: null,
-      publicationStatus: "idle",
+      ...state.displaySelection,
+      teamId: shouldWithdrawDisplay ? null : state.displaySelection.teamId,
+      publicationStatus: shouldWithdrawDisplay ? "idle" : state.displaySelection.publicationStatus,
       displayRevision: state.displaySelection.displayRevision + 1,
-      publishedAt: "",
+      publishedAt: shouldWithdrawDisplay ? "" : state.displaySelection.publishedAt,
       updatedAt: now,
+      revealedTeamIdsByGroup,
+      rankingTransition: shouldWithdrawDisplay || transitionBelongsToGroup
+        ? null
+        : state.displaySelection.rankingTransition,
     };
     displayChanged = true;
   }
@@ -700,6 +1083,12 @@ export function getEntry(state, judgeId, teamId) {
 export function getCompositeSummary(state, teamId) {
   const team = getTeamById(state, teamId);
   const roster = team ? getTeamRoster(state, team) : [];
+  const accountsById = new Map(getJudgeAccounts(state).map((account) => [account.id, account]));
+  const displayRoster = roster.toSorted((leftId, rightId) => {
+    const leftUsername = accountsById.get(leftId)?.username ?? leftId;
+    const rightUsername = accountsById.get(rightId)?.username ?? rightId;
+    return leftUsername.localeCompare(rightUsername, "en", { numeric: true, sensitivity: "base" }) || leftId.localeCompare(rightId);
+  });
   const submittedTotals = roster
     .map((judgeId) => {
       const entry = getEntry(state, judgeId, teamId);
@@ -709,7 +1098,7 @@ export function getCompositeSummary(state, teamId) {
     })
     .filter(Boolean)
     .sort((left, right) => left.totalCents - right.totalCents || left.judgeId.localeCompare(right.judgeId));
-  const anonymousScores = roster.map((judgeId) => {
+  const anonymousScores = displayRoster.map((judgeId) => {
     const entry = getEntry(state, judgeId, teamId);
     return entry.submitted ? { submitted: true, score: formatCents(getEntryTotalCents(entry)) } : { submitted: false, score: "--" };
   });
@@ -758,17 +1147,39 @@ export function invalidateDisplayForReview(
   { includeTemporary = false } = {},
 ) {
   const reviewableStatuses = includeTemporary
-    ? ["final", "temporary"]
+    ? ["final", "temporary", "review_required"]
     : ["final"];
-  if (
-    state.displaySelection.teamId !== teamId ||
-    !reviewableStatuses.includes(state.displaySelection.publicationStatus)
-  ) return false;
+  const invalidatesCurrentDisplay =
+    state.displaySelection.teamId === teamId &&
+    reviewableStatuses.includes(state.displaySelection.publicationStatus);
+  const revealedTeamIdsByGroup = cloneRevealedTeamIdsByGroup(state.displaySelection);
+  let removedFromRankingHistory = false;
+  if (invalidatesCurrentDisplay || includeTemporary) {
+    Object.keys(revealedTeamIdsByGroup).forEach((groupId) => {
+      const previousTeamIds = revealedTeamIdsByGroup[groupId] ?? [];
+      const nextTeamIds = previousTeamIds.filter((id) => id !== teamId);
+      if (nextTeamIds.length !== previousTeamIds.length) removedFromRankingHistory = true;
+      revealedTeamIdsByGroup[groupId] = nextTeamIds;
+    });
+  }
+  const transitionReferencesTeam = [
+    state.displaySelection.rankingTransition?.fromTeamId,
+    state.displaySelection.rankingTransition?.toTeamId,
+  ].includes(teamId) || state.displaySelection.rankingTransition?.teamIds?.includes(teamId);
+  const clearsRankingTransition = invalidatesCurrentDisplay || removedFromRankingHistory ||
+    (includeTemporary && transitionReferencesTeam);
+  if (!invalidatesCurrentDisplay && !removedFromRankingHistory && !clearsRankingTransition) return false;
   state.displaySelection = {
     ...state.displaySelection,
-    publicationStatus: "review_required",
+    publicationStatus: invalidatesCurrentDisplay
+      ? "review_required"
+      : state.displaySelection.publicationStatus,
     displayRevision: state.displaySelection.displayRevision + 1,
     updatedAt: now,
+    revealedTeamIdsByGroup,
+    rankingTransition: clearsRankingTransition
+      ? null
+      : state.displaySelection.rankingTransition,
   };
   return true;
 }
@@ -889,8 +1300,12 @@ export function dispatchAssignment(state, { teamId, expectedRevision, force = fa
   const activeGroupId = state.competitionSetup?.activeGroupId;
   const activeSetup = activeGroupId ? getCompetitionGroupSetup(state, activeGroupId) : null;
   if (!activeSetup || activeSetup.status !== "open") fail(409, "请先在开赛配置中开启比赛组别");
-  if (targetTeam.groupId !== activeGroupId || !activeSetup.teamIds.includes(targetTeam.id)) {
-    fail(409, "该队伍未纳入当前已开启的本场比赛");
+  const activeHalfTeamIds = getActiveCompetitionHalfTeamIds(activeSetup);
+  if (!activeSetup.activeHalf || !activeHalfTeamIds.length) {
+    fail(409, "当前处于中场休息，请先配置并开启下半场");
+  }
+  if (targetTeam.groupId !== activeGroupId || !activeHalfTeamIds.includes(targetTeam.id)) {
+    fail(409, "该队伍不在当前半场的派发范围内");
   }
   if (assignment.teamId === targetTeam.id) {
     fail(409, "该队已处于当前派发状态，无需重复派发");
@@ -944,13 +1359,18 @@ export function dispatchAssignment(state, { teamId, expectedRevision, force = fa
 export function publishDisplaySelection(state, { teamId, publicationStatus, expectedRevision, now = new Date().toISOString() }) {
   assertExpectedRevision(expectedRevision, state.displaySelection.displayRevision, "成绩展示已被其他管理员更新，请刷新后重试");
   const previousSelection = { ...state.displaySelection };
+  const revealedTeamIdsByGroup = cloneRevealedTeamIdsByGroup(state.displaySelection);
   if (publicationStatus === "idle" || !teamId) {
     state.displaySelection = {
+      ...state.displaySelection,
       teamId: null,
       publicationStatus: "idle",
+      projectionView: "slogan",
       displayRevision: state.displaySelection.displayRevision + 1,
       publishedAt: "",
       updatedAt: now,
+      revealedTeamIdsByGroup,
+      rankingTransition: null,
     };
     return { previousSelection, mutation: { type: "display" } };
   }
@@ -960,15 +1380,192 @@ export function publishDisplaySelection(state, { teamId, publicationStatus, expe
   const summary = getCompositeSummary(state, team.id);
   if (publicationStatus === "final" && !summary.isFinal) fail(409, "该队尚未形成最终综合分，不能发布到大屏");
   if (publicationStatus === "temporary" && summary.submittedCount < 1) fail(409, "至少 1 位评委提交后才能临时发布");
-  if (!["final", "temporary"].includes(publicationStatus)) fail(400, "成绩展示状态无效");
+  if (publicationStatus === "waiting" && summary.submittedCount !== 0) fail(409, "已有评委提交的队伍不能作为待评分队伍展示");
+  if (!["final", "temporary", "waiting"].includes(publicationStatus)) fail(400, "成绩展示状态无效");
+  if (isRankingTransitionActive(state.displaySelection)) {
+    fail(409, "实时排名正在展示，请先在大屏按右键继续");
+  }
+  const previousTeam = getTeamById(state, state.displaySelection.teamId);
+  const previousTeamWasDisplayed = Boolean(
+    previousTeam &&
+      state.displaySelection.projectionView === "scoreboard" &&
+      ["final", "temporary", "waiting"].includes(state.displaySelection.publicationStatus),
+  );
+  const isTeamChange = previousTeamWasDisplayed && previousTeam.id !== team.id;
+  if (
+    previousTeamWasDisplayed &&
+    getCompositeSummary(state, previousTeam.id).submittedCount > 0
+  ) {
+    revealedTeamIdsByGroup[previousTeam.groupId] = [
+      ...new Set([...(revealedTeamIdsByGroup[previousTeam.groupId] ?? []), previousTeam.id]),
+    ];
+  }
+  const transitionTeamIds = isTeamChange
+    ? [...(revealedTeamIdsByGroup[previousTeam.groupId] ?? [])]
+    : [];
+  const shouldAnimateRanking = Boolean(
+    state.displaySelection.rankingAnimationEnabled === true &&
+      isTeamChange &&
+      getCompositeSummary(state, previousTeam.id).submittedCount > 0 &&
+      transitionTeamIds.some((id) => getCompositeSummary(state, id).submittedCount > 0),
+  );
+  if (summary.submittedCount > 0) {
+    revealedTeamIdsByGroup[team.groupId] = [
+      ...new Set([...(revealedTeamIdsByGroup[team.groupId] ?? []), team.id]),
+    ];
+  }
+  const nextRevision = state.displaySelection.displayRevision + 1;
   state.displaySelection = {
+    ...state.displaySelection,
     teamId: team.id,
     publicationStatus,
-    displayRevision: state.displaySelection.displayRevision + 1,
+    projectionView: "scoreboard",
+    rankingGroupId: team.groupId,
+    displayRevision: nextRevision,
     publishedAt: now,
+    updatedAt: now,
+    revealedTeamIdsByGroup,
+    rankingTransition: shouldAnimateRanking
+      ? {
+          transitionRevision: nextRevision,
+          groupId: previousTeam.groupId,
+          fromTeamId: previousTeam.id,
+          toTeamId: team.id,
+          startedAt: now,
+          durationMs: getDisplayRankingTransitionDurationMs(
+            state,
+            previousTeam.groupId,
+            transitionTeamIds,
+            previousTeam.id,
+          ),
+          teamIds: transitionTeamIds,
+        }
+      : null,
+  };
+  return { previousSelection, mutation: { type: "display" } };
+}
+
+function moveDisplayToAdjacentTeam(
+  state,
+  { expectedRevision, now = new Date().toISOString() },
+  offset,
+) {
+  assertExpectedRevision(expectedRevision, state.displaySelection.displayRevision, "大屏展示已更新，请稍后再试");
+  if (state.displaySelection.projectionView !== "scoreboard" || !state.displaySelection.teamId) {
+    fail(409, "当前大屏不在队伍成绩页");
+  }
+  const currentTeam = getTeamById(state, state.displaySelection.teamId);
+  if (!currentTeam) fail(409, "当前大屏队伍已不存在");
+  const setup = getCompetitionGroupSetup(state, currentTeam.groupId);
+  const displayScopeTeamIds = new Set(getCompetitionRankingScope(setup).teamIds);
+  const orderedTeams = getOrderedSetupTeams(state, currentTeam.groupId)
+    .filter((team) => displayScopeTeamIds.has(team.id));
+  const currentIndex = orderedTeams.findIndex((team) => team.id === currentTeam.id);
+  if (currentIndex < 0) fail(409, "当前队伍不在本组已配置的参赛范围内");
+  const targetTeam = orderedTeams[currentIndex + offset] ?? null;
+  const isPrevious = offset < 0;
+  if (!targetTeam) {
+    return {
+      previousSelection: { ...state.displaySelection },
+      changed: false,
+      reason: isPrevious ? "start_of_group" : "end_of_group",
+      fromTeamId: currentTeam.id,
+      toTeamId: null,
+      publicationStatus: state.displaySelection.publicationStatus,
+      mutation: { type: "noop" },
+    };
+  }
+  const summary = getCompositeSummary(state, targetTeam.id);
+  const publicationStatus = summary.isFinal
+    ? "final"
+    : summary.submittedCount > 0
+      ? "temporary"
+      : "waiting";
+  const outcome = publishDisplaySelection(state, {
+    teamId: targetTeam.id,
+    publicationStatus,
+    expectedRevision,
+    now,
+  });
+  return {
+    ...outcome,
+    changed: true,
+    reason: isPrevious ? "rewound" : "advanced",
+    fromTeamId: currentTeam.id,
+    toTeamId: targetTeam.id,
+    publicationStatus,
+  };
+}
+
+export function advanceDisplayToNextTeam(
+  state,
+  options,
+) {
+  return moveDisplayToAdjacentTeam(state, options, 1);
+}
+
+export function advanceDisplayToPreviousTeam(
+  state,
+  options,
+) {
+  return moveDisplayToAdjacentTeam(state, options, -1);
+}
+
+export function showDisplayRankings(state, { groupId, expectedRevision, now = new Date().toISOString() }) {
+  assertExpectedRevision(expectedRevision, state.displaySelection.displayRevision, "成绩展示已被其他管理员更新，请刷新后重试");
+  if (!groupId || !state.competitionSetup?.groups?.[groupId]) fail(400, "总排名展示组别无效");
+  const previousSelection = { ...state.displaySelection };
+  state.displaySelection = {
+    ...state.displaySelection,
+    projectionView: "rankings",
+    rankingGroupId: groupId,
+    rankingTransition: null,
+    displayRevision: state.displaySelection.displayRevision + 1,
     updatedAt: now,
   };
   return { previousSelection, mutation: { type: "display" } };
+}
+
+export function updateDisplayRankingAnimation(
+  state,
+  { enabled, expectedRevision, now = new Date().toISOString() },
+) {
+  assertExpectedRevision(expectedRevision, state.displaySelection.displayRevision, "成绩展示已被其他管理员更新，请刷新后重试");
+  if (typeof enabled !== "boolean") fail(400, "实时排名动画开关无效");
+  const previousSelection = { ...state.displaySelection };
+  if (state.displaySelection.rankingAnimationEnabled === enabled) {
+    return { previousSelection, changed: false, mutation: { type: "noop" } };
+  }
+  state.displaySelection = {
+    ...state.displaySelection,
+    rankingAnimationEnabled: enabled,
+    rankingTransition: null,
+    displayRevision: state.displaySelection.displayRevision + 1,
+    updatedAt: now,
+  };
+  return { previousSelection, changed: true, mutation: { type: "display" } };
+}
+
+export function advanceDisplayRankingTransition(
+  state,
+  { transitionRevision, now = new Date().toISOString() },
+) {
+  const expectedTransitionRevision = requireExpectedRevision(transitionRevision);
+  const currentTransition = state.displaySelection.rankingTransition;
+  const previousSelection = { ...state.displaySelection };
+  if (!currentTransition) {
+    return { previousSelection, changed: false, mutation: { type: "noop" } };
+  }
+  if (currentTransition.transitionRevision !== expectedTransitionRevision) {
+    fail(409, "大屏排名过场已更新，请稍后再试");
+  }
+  state.displaySelection = {
+    ...state.displaySelection,
+    rankingTransition: null,
+    displayRevision: state.displaySelection.displayRevision + 1,
+    updatedAt: now,
+  };
+  return { previousSelection, changed: true, mutation: { type: "display" } };
 }
 
 export function writeScoreEntry(state, { actor, judgeId, teamId, entry, assignmentRevision, now = new Date().toISOString() }) {
@@ -1047,7 +1644,12 @@ export function writeScoreEntry(state, { actor, judgeId, teamId, entry, assignme
     };
     rescoreCompleted = true;
   }
-  const displayInvalidated = invalidateDisplayForReview(state, teamId, now);
+  const displayInvalidated = invalidateDisplayForReview(
+    state,
+    teamId,
+    now,
+    { includeTemporary: actor.role === "admin" || isJudgeRescore },
+  );
   return {
     previousEntry,
     persistedEntry,

@@ -7,6 +7,8 @@ const mimeTypes = {
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
 };
@@ -22,6 +24,20 @@ export function createHttpRoutes({ distDir, maxRequestBodyBytes, HttpError, Cont
       "Cache-Control": "no-store",
     });
     response.end(JSON.stringify(payload));
+  }
+
+  function sendBinary(response, status, payload, { contentType = "application/octet-stream", filename = "download.bin" } = {}) {
+    const content = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+    const asciiFilename = String(filename).replace(/[^\x20-\x7E]+/g, "_").replace(/["\\]/g, "_") || "download.bin";
+    const encodedFilename = encodeURIComponent(String(filename)).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+    response.writeHead(status, {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`,
+      "Content-Length": content.length,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(content);
   }
 
   function sendApiError(response, error, audit) {
@@ -85,5 +101,5 @@ export function createHttpRoutes({ distDir, maxRequestBodyBytes, HttpError, Cont
     }
   }
 
-  return { readJsonBody, sendApiError, sendJson, serveStatic };
+  return { readJsonBody, sendApiError, sendJson, sendBinary, serveStatic };
 }

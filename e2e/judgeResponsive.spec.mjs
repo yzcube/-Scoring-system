@@ -115,7 +115,7 @@ test("评委头部和服务器状态适配手机、平板与桌面", async ({ pa
   await page.getByLabel("密码").fill("admin123");
   await page.getByRole("button", { name: "登录" }).click();
   await page.getByRole("link", { name: "开赛配置", exact: true }).click();
-  await page.getByRole("button", { name: "开启本组比赛" }).click();
+  await page.getByRole("button", { name: "开启上半场" }).click();
 
   const judgeContext = await browser.newContext({ viewport: judgeViewports[0], hasTouch: true });
   const judgePage = await judgeContext.newPage();
