@@ -1,12 +1,9 @@
 name: Feishu test sync
-
 on:
   push:
     branches: [codex/feishu-sync-test]
   workflow_dispatch:
-
 permissions: {}
-
 jobs:
   test-sync:
     if: github.ref == 'refs/heads/codex/feishu-sync-test'
@@ -20,12 +17,10 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, sys, urllib.error, urllib.parse, urllib.request, uuid
-
           app_id = os.environ.get('FEISHU_APP_ID', '')
           app_secret = os.environ.get('FEISHU_APP_SECRET', '')
           if not app_id or not app_secret:
               sys.exit('Missing test application credentials in repository secrets')
-
           def post(url, payload, token=None):
               headers = {'Content-Type': 'application/json; charset=utf-8'}
               if token:
@@ -35,13 +30,17 @@ jobs:
                   with urllib.request.urlopen(request, timeout=20) as response:
                       result = json.load(response)
               except urllib.error.HTTPError as exc:
-                  sys.exit(f'Feishu request failed: HTTP {exc.code}')
+                  stage = 'authentication' if token is None else 'record creation'
+                  try:
+                      code = json.load(exc).get('code')
+                  except (ValueError, AttributeError):
+                      code = 'unavailable'
+                  sys.exit(f'Feishu {stage} failed: HTTP {exc.code}, code {code}')
               except (urllib.error.URLError, TimeoutError):
                   sys.exit('Feishu request failed or timed out')
               if result.get('code') != 0:
                   sys.exit(f"Feishu request failed: code {result.get('code')}")
               return result
-
           auth = post('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {'app_id': app_id, 'app_secret': app_secret})
           token = auth.get('tenant_access_token')
           if not token:
