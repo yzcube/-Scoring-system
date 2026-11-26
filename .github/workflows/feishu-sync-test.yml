@@ -45,7 +45,7 @@ jobs:
           token = auth.get('tenant_access_token')
           if not token:
               sys.exit('Feishu did not return an application token')
-          key = str(uuid.uuid5(uuid.NAMESPACE_URL, 'feishu-synthetic-test:' + os.environ['RUN_COMMIT']))
+          key = str(uuid.UUID(bytes=uuid.uuid5(uuid.NAMESPACE_URL, 'feishu-synthetic-test:' + os.environ['RUN_COMMIT']).bytes, version=4))
           url = 'https://open.feishu.cn/open-apis/bitable/v1/apps/EvyDbLvtuag1N7s8uw1crgKvnwh/tables/tblZtSo9miNki40y/records?' + urllib.parse.urlencode({'client_token': key})
           post(url, {'fields': {'Commit Message': 'test: GitHub 自动同步模拟记录', '项目名称': '评分系统（模拟）', 'Commit ID': 'synthetic-' + key}}, token)
           print('Synthetic record written to the Feishu test base')
